@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Chat — Job Copilot{% endblock %}
+{% block content %}
+    <h1>Chat with your agent</h1>
+    <p class="subtitle">Talk to the same Supervisor Agent configured in <code>AGENT_CONFIG.md</code>. It can search jobs, check your pipeline, save postings, and draft cover letters, using the tools this app exposes over MCP.</p>
+
+    {% if error %}
+    <div class="callout error">{{ error }}</div>
+    {% endif %}
+
+    <div class="chat-log">
+        {% if not history %}
+        <p class="empty">Say something to get started, e.g. "What should I apply to?"</p>
+        {% endif %}
+        {% for msg in history %}
+        <div class="chat-msg {{ msg.role }}">
+            <span class="role">{{ 'Agent' if msg.role == 'assistant' else 'You' }}</span>
+            <div class="bubble">{{ msg.content }}</div>
+        </div>
+        {% endfor %}
+    </div>
+
+    <form method="post" action="/chat" class="chat-input-row" id="chat-form">
+        <input type="text" name="message" placeholder="Ask about jobs, your pipeline, a cover letter…" required autofocus>
+        <button type="submit" id="chat-submit">Send</button>
+    </form>
+    <p class="field-hint" id="chat-wait-note" style="display:none;">The agent can take up to a couple of minutes, especially when it's calling several tools to answer.</p>
+
+    <form method="post" action="/chat/clear" style="margin-top:8px;">
+        <button type="submit" class="secondary">Clear conversation</button>
+    </form>
+
+    <script>
+        document.getElementById('chat-form').addEventListener('submit', function () {
+            var btn = document.getElementById('chat-submit');
+            btn.disabled = true;
+            btn.textContent = 'Thinking…';
+            document.getElementById('chat-wait-note').style.display = 'block';
+        });
+    </script>
+{% endblock %}

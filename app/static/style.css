@@ -194,6 +194,7 @@ button:focus-visible, .btn:focus-visible, a:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
 }
+button[disabled], .btn[disabled] { opacity: 0.6; cursor: not-allowed; }
 
 .inline-form { display: inline-flex; gap: 6px; align-items: center; }
 
@@ -253,6 +254,50 @@ button:focus-visible, .btn:focus-visible, a:focus-visible {
     transition: color 0.15s ease, border-color 0.15s ease;
 }
 .status-tabs a.active { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
+
+.chat-log {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 16px 18px;
+    margin-bottom: 14px;
+    min-height: 200px;
+    max-height: 480px;
+    overflow-y: auto;
+}
+.chat-msg { margin-bottom: 14px; max-width: 85%; }
+.chat-msg:last-child { margin-bottom: 0; }
+.chat-msg .role {
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    margin-bottom: 4px;
+    display: block;
+}
+.chat-msg .bubble {
+    padding: 10px 14px;
+    border-radius: var(--radius);
+    white-space: pre-wrap;
+    font-size: 0.92rem;
+    line-height: 1.5;
+}
+.chat-msg.user { margin-left: auto; }
+.chat-msg.user .role { color: var(--ink-soft); text-align: right; }
+.chat-msg.user .bubble { background: var(--paper); border: 1px solid var(--line); }
+.chat-msg.assistant .role { color: var(--accent); }
+.chat-msg.assistant .bubble { background: var(--accent-soft); }
+
+.chat-input-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    width: 100%;
+    margin-top: 14px;
+}
+.chat-input-row input[type=text] { flex: 1 1 220px; min-width: 0; }
+.chat-input-row button { flex: 0 0 auto; }
 
 details { margin-top: 8px; }
 details summary { cursor: pointer; font-size: 0.85rem; color: var(--accent); }

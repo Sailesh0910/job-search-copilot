@@ -9,11 +9,24 @@ the FastAPI app in main.py instead, since Free Edition allows only one
 Databricks App and this one also serves the web frontend.
 """
 
+import hashlib
+import hmac
+import secrets
+
 from fastmcp import FastMCP
 
 import job_broker
 
 mcp = FastMCP("Job-Hunting-Copilot")
+
+# Per-process secret backing remove_saved_job's confirmation tokens (see
+# below). Regenerated on every restart, which just means a token issued
+# before a redeploy stops working, not a real problem for a single-user app.
+_REMOVAL_TOKEN_SECRET = secrets.token_bytes(32)
+
+
+def _removal_token(job_posting_id: str) -> str:
+    return hmac.new(_REMOVAL_TOKEN_SECRET, job_posting_id.encode(), hashlib.sha256).hexdigest()[:12]
 
 
 @mcp.tool()
@@ -117,23 +130,46 @@ def view_pipeline(status: str = None) -> dict:
 
 
 @mcp.tool()
-def remove_saved_job(job_posting_id: str) -> dict:
+def remove_saved_job(job_posting_id: str, confirmation_token: str = None) -> dict:
     """
     Removes a posting from the pipeline entirely — not a status change, the
     tracked application and any interview notes on it are deleted. Use this
     only when the user explicitly asks to remove, delete, or un-save a
-    posting, never as a side effect of another request. Always confirm with
-    the user before calling this, the same as changing a status they didn't
-    ask to change — unlike a status change, this can't be undone.
+    posting, never as a side effect of another request.
+
+    This is two calls by design, not a formality: the first call (with no
+    confirmation_token) never deletes anything. It returns the posting's
+    details plus a confirmation_token. Only call this a second time, passing
+    that exact token back, after the user has actually confirmed they want
+    it gone — that second call is what performs the deletion. This is
+    enforced here, not just requested by instruction, so a single tool call
+    can never delete data.
 
     Args:
         job_posting_id: The posting's id, from view_pipeline.
+        confirmation_token: Omit on the first call. Pass back the token from
+            that first call's response to actually perform the removal.
 
     Returns:
-        Dict with 'removed': True if a tracked application existed and was
-        deleted, False if there was nothing to remove.
+        First call: {"confirmation_required": True, "confirmation_token":
+        ..., "posting": {...}}. Second call (with the right token):
+        {"removed": True/False}. {"error": ...} on failure.
     """
     try:
+        expected_token = _removal_token(job_posting_id)
+        if confirmation_token != expected_token:
+            posting = job_broker.get_job_posting(job_posting_id)
+            if not posting:
+                return {"error": f"No posting found with id {job_posting_id}"}
+            return {
+                "confirmation_required": True,
+                "confirmation_token": expected_token,
+                "posting": {"title": posting.get("title"), "company": posting.get("company")},
+                "message": (
+                    "Ask the user to confirm before calling remove_saved_job "
+                    "again with this exact confirmation_token."
+                ),
+            }
         result = job_broker.remove_from_pipeline(job_posting_id)
         return {"removed": result is not None}
     except Exception as e:

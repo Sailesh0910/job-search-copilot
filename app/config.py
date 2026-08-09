@@ -18,3 +18,9 @@ CHUNK_SIZE = 800
 CHUNK_OVERLAP = 100
 
 COVER_LETTER_MODEL = os.environ.get("COVER_LETTER_MODEL", "system.ai.llama-4-maverick")
+
+# The Agent Bricks Supervisor Agent's own serving endpoint, queried directly
+# by the /chat web UI. It handles its own tool-calling (including MCP calls
+# back into this app) internally, so this is just the client side of that
+# conversation, unrelated to COVER_LETTER_MODEL above.
+SUPERVISOR_AGENT_ENDPOINT = os.environ.get("SUPERVISOR_AGENT_ENDPOINT", "mas-180b0199-endpoint")

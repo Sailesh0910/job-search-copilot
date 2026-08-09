@@ -68,6 +68,11 @@ STATUSES = list(STATUS.__args__)
 
 JOBS_PAGE_SIZE = 25
 
+# In-memory chat history. Fine for a single-user app with no auth (same
+# scope as the rest of the app, see ARCHITECTURE.md); resets on redeploy or
+# if the app sleeps, which is an acceptable tradeoff for a demo chat surface.
+_chat_history: list = []
+
 
 def _parse_optional_int(raw: Optional[str]) -> Optional[int]:
     """
@@ -296,6 +301,47 @@ def pipeline_remove(job_posting_id: str):
 def pipeline_add_note(application_id: int, note_text: str = Form(...), interview_date: str = Form("")):
     job_broker.add_interview_note(application_id, note_text, interview_date or None)
     return RedirectResponse("/pipeline", status_code=303)
+
+
+# ----------------------------------------------------------------------------
+# Chat — talk to the Supervisor Agent from inside this app, instead of only
+# through the Agent Bricks Playground. The agent still does its own tool
+# calls back into this app's /mcp; this is purely a client for its endpoint.
+# ----------------------------------------------------------------------------
+
+@app.get("/chat")
+def chat_page(request: Request, error: bool = False):
+    message = (
+        "Couldn't reach the agent. Check that its endpoint is deployed and "
+        "reachable, then try again."
+        if error else None
+    )
+    return templates.TemplateResponse(request, "chat.html", {
+        "history": _chat_history, "error": message,
+    })
+
+
+@app.post("/chat")
+def chat_send(message: str = Form(...)):
+    message = message.strip()
+    if not message:
+        return RedirectResponse("/chat", status_code=303)
+
+    _chat_history.append({"role": "user", "content": message})
+    try:
+        reply = job_broker.chat_with_agent(_chat_history)
+    except RuntimeError as e:
+        logger.error("Chat with agent failed: %s", e)
+        return RedirectResponse("/chat?error=1", status_code=303)
+
+    _chat_history.append({"role": "assistant", "content": reply})
+    return RedirectResponse("/chat", status_code=303)
+
+
+@app.post("/chat/clear")
+def chat_clear():
+    _chat_history.clear()
+    return RedirectResponse("/chat", status_code=303)
 
 
 if __name__ == "__main__":

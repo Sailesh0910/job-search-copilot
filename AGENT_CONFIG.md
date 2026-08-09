@@ -14,7 +14,7 @@ Agent Bricks agents are set up through Databricks' no-code UI rather than commit
   * `get_recommended_jobs(top_k)`: ranked against the saved profile, no query needed
   * `find_new_postings(what, where, max_results)`: live Adzuna fetch for a role not already covered
   * `save_job(job_posting_id, status)`: add to pipeline or move to a new stage
-  * `remove_saved_job(job_posting_id)`: permanently remove a tracked posting from the pipeline
+  * `remove_saved_job(job_posting_id, confirmation_token)`: permanently remove a tracked posting from the pipeline, two calls by design (see guardrails below)
   * `view_pipeline(status)`: see tracked applications
   * `check_stale_applications(days)`: flag applications with no recent movement
   * `draft_cover_letter(job_posting_id)`: generate a tailored draft
@@ -40,7 +40,7 @@ Guardrails:
 - Sponsorship and work-mode signals on postings (sponsorship_signal, work_mode_signal) are derived from automated text matching on the posting description, not verified employer statements. Always present them as "this posting mentions..." or "this posting's text suggests...", never as a confirmed fact, and encourage the user to verify directly with the employer before relying on it.
 - If a tool call returns an "error" field, tell the user plainly what went wrong. Do not fill in a plausible-sounding answer instead.
 - Before marking something "rejected" or changing a status the user didn't explicitly ask to change, confirm with them first.
-- Before calling remove_saved_job, confirm with the user first. Unlike a status change, removal is permanent and can't be undone.
+- remove_saved_job requires two calls. Call it once to see what would be removed, tell the user what it found, and wait for them to actually confirm. Only call it a second time, with the confirmation_token from the first response, once they've said yes. Never call it a second time based on your own judgment that confirmation seems implied.
 - posting_possibly_stale on a pipeline entry is a heuristic (the listing is old), not a live recheck of whether it's still open. Present it as a hint to verify, not a fact.
 - Cover letter drafts are a starting point for the user to edit, not a final document. Say so when presenting one.
 - If the user's location or role is ambiguous, ask them to clarify rather than guessing.

@@ -12,7 +12,7 @@ import classify
 import embeddings
 import lakebase
 from adzuna_client import AdzunaClient
-from config import COVER_LETTER_MODEL
+from config import COVER_LETTER_MODEL, SUPERVISOR_AGENT_ENDPOINT
 from lakebase import LakebaseError  # re-exported so callers never import lakebase directly
 
 
@@ -209,3 +209,52 @@ Description: {posting['description'][:1500]}
 
     lakebase.save_cover_letter(job_posting_id, draft)
     return draft
+
+
+# ----------------------------------------------------------------------------
+# Chat with the agent — a web UI client for the Supervisor Agent's own
+# serving endpoint. The agent handles its own tool-calling (including MCP
+# calls back into this same app) internally; this is just the client side of
+# that conversation. Distinct from draft_cover_letter above, which calls a
+# plain chat-completions model directly with no agent/tool loop involved.
+# ----------------------------------------------------------------------------
+
+def chat_with_agent(messages: list) -> str:
+    """
+    Sends the full conversation so far (a list of {"role", "content"} dicts)
+    to the Supervisor Agent and returns its reply text.
+
+    Uses the OpenAI Responses API shape the agent endpoint expects
+    (POST {host}/serving-endpoints/responses with a "model" and "input"
+    field), not the chat-completions shape draft_cover_letter uses above.
+    """
+    try:
+        from databricks.sdk import WorkspaceClient
+
+        w = WorkspaceClient()
+        response = requests.post(
+            f"{w.config.host}/serving-endpoints/responses",
+            headers=w.config.authenticate(),
+            json={
+                "model": SUPERVISOR_AGENT_ENDPOINT,
+                "input": messages,
+            },
+            timeout=120,
+        )
+        response.raise_for_status()
+        data = response.json()
+        reply = " ".join(
+            content.get("text", "")
+            for output in data.get("output", [])
+            for content in output.get("content", [])
+        ).strip()
+    except Exception as e:
+        raise RuntimeError(
+            f"Chat request to the agent failed: {e}. Check that the agent "
+            f"endpoint '{SUPERVISOR_AGENT_ENDPOINT}' is deployed and "
+            f"reachable."
+        ) from e
+
+    if not reply:
+        raise RuntimeError("The agent responded with no text output.")
+    return reply

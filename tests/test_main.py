@@ -259,3 +259,68 @@ def test_lakebase_error_handler_hides_raw_detail_and_returns_503(client, monkeyp
     assert "secret-detail" not in resp.text
     assert "db.internal.example" not in resp.text
     assert "went wrong" in resp.text.lower()
+
+
+# ----------------------------------------------------------------------------
+# Chat
+# ----------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _reset_chat_history():
+    """_chat_history is module-level state in main.py, shared across
+    requests by design (single-user app). Tests must not leak it between
+    each other."""
+    main._chat_history.clear()
+    yield
+    main._chat_history.clear()
+
+
+def test_chat_page_loads_empty(client):
+    resp = client.get("/chat")
+    assert resp.status_code == 200
+    assert "Say something to get started" in resp.text
+
+
+def test_chat_send_appends_history_and_shows_reply(client, monkeypatch):
+    monkeypatch.setattr(job_broker, "chat_with_agent", lambda messages: "Here are your top matches.")
+
+    resp = client.post("/chat", data={"message": "What should I apply to?"}, follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/chat"
+
+    follow = client.get("/chat")
+    assert "What should I apply to?" in follow.text
+    assert "Here are your top matches." in follow.text
+
+
+def test_chat_send_blank_message_is_a_no_op(client, monkeypatch):
+    monkeypatch.setattr(job_broker, "chat_with_agent", lambda messages: "should not be called")
+    resp = client.post("/chat", data={"message": "   "}, follow_redirects=False)
+    assert resp.status_code == 303
+    assert main._chat_history == []
+
+
+def test_chat_send_failure_redirects_with_error_and_keeps_user_message(client, monkeypatch):
+    def boom(messages):
+        raise RuntimeError("agent endpoint unavailable")
+
+    monkeypatch.setattr(job_broker, "chat_with_agent", boom)
+
+    resp = client.post("/chat", data={"message": "hello"}, follow_redirects=False)
+    assert resp.status_code == 303
+    assert "error=1" in resp.headers["location"]
+
+    follow = client.get(resp.headers["location"])
+    assert follow.status_code == 200
+    assert "agent" in follow.text.lower()
+    assert main._chat_history == [{"role": "user", "content": "hello"}]
+
+
+def test_chat_clear_empties_history(client, monkeypatch):
+    monkeypatch.setattr(job_broker, "chat_with_agent", lambda messages: "reply")
+    client.post("/chat", data={"message": "hello"})
+    assert main._chat_history != []
+
+    resp = client.post("/chat/clear", follow_redirects=False)
+    assert resp.status_code == 303
+    assert main._chat_history == []

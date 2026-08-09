@@ -92,6 +92,12 @@ Agent Bricks, then Create Agent, then Supervisor Agent, then Add a
 Databricks App (not Add a UC MCP Service), then select this app. See
 `AGENT_CONFIG.md` for the system prompt to paste in.
 
+Once it's created, note the agent's own serving endpoint name (shown on its
+endpoint page in Serving) and set it as `SUPERVISOR_AGENT_ENDPOINT` in
+`app/app.yaml` if it differs from the default. The `/chat` page in this app
+talks to that endpoint directly, so you don't need the Agent Bricks
+Playground to try the agent out, though the Playground still works too.
+
 ## Testing
 
 ```bash

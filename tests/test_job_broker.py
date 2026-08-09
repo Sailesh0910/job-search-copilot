@@ -210,3 +210,59 @@ def test_draft_cover_letter_wraps_serving_endpoint_failure(monkeypatch):
 
     with pytest.raises(RuntimeError, match="Cover letter drafting failed"):
         job_broker.draft_cover_letter("job-1")
+
+
+# ----------------------------------------------------------------------------
+# chat_with_agent
+# ----------------------------------------------------------------------------
+
+class _FakeResponsesResponse:
+    """Stands in for the agent endpoint's Responses-API-shaped reply:
+    {"output": [{"content": [{"text": "..."}]}]}."""
+    def __init__(self, text, status_ok=True):
+        self._text = text
+        self._status_ok = status_ok
+
+    def raise_for_status(self):
+        if not self._status_ok:
+            raise requests_module.HTTPError("503 agent endpoint unavailable")
+
+    def json(self):
+        return {"output": [{"content": [{"text": self._text}]}]}
+
+
+def test_chat_with_agent_returns_reply(monkeypatch):
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient", _FakeWorkspaceClient)
+    captured = {}
+
+    def fake_post(url, headers, json, timeout):
+        captured["url"] = url
+        captured["json"] = json
+        return _FakeResponsesResponse("Here are three roles that match your profile.")
+
+    monkeypatch.setattr(job_broker.requests, "post", fake_post)
+
+    messages = [{"role": "user", "content": "What should I apply to?"}]
+    reply = job_broker.chat_with_agent(messages)
+
+    assert reply == "Here are three roles that match your profile."
+    assert captured["url"].endswith("/serving-endpoints/responses")
+    assert captured["json"]["input"] == messages
+
+
+def test_chat_with_agent_wraps_failure(monkeypatch):
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient", _FakeWorkspaceClient)
+    monkeypatch.setattr(job_broker.requests, "post",
+                         lambda *a, **k: _FakeResponsesResponse(None, status_ok=False))
+
+    with pytest.raises(RuntimeError, match="Chat request to the agent failed"):
+        job_broker.chat_with_agent([{"role": "user", "content": "hi"}])
+
+
+def test_chat_with_agent_raises_on_empty_reply(monkeypatch):
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient", _FakeWorkspaceClient)
+    monkeypatch.setattr(job_broker.requests, "post",
+                         lambda *a, **k: _FakeResponsesResponse(""))
+
+    with pytest.raises(RuntimeError, match="no text output"):
+        job_broker.chat_with_agent([{"role": "user", "content": "hi"}])
