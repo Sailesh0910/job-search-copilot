@@ -1,3 +1,4 @@
+# Databricks notebook source
 """
 Embedding ingestion: Lakebase postings -> Lakebase vectors.
 

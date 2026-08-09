@@ -15,29 +15,50 @@
     {% endif %}
 
     {% if mode != 'recommended' %}
+    <p class="field-hint">Type a description below to semantically search postings already saved. Leave it blank and use the filters instead to just browse everything by salary, work mode, or how recently it was posted.</p>
     <form method="get" action="/jobs" class="filters">
-        <input type="search" name="q" placeholder="Describe the role you want…" value="{{ q }}" style="flex:2; min-width:220px;">
-        <select name="work_mode">
-            {% for opt in ["any", "remote", "hybrid", "onsite"] %}
-            <option value="{{ opt }}" {{ 'selected' if work_mode == opt }}>{{ opt.capitalize() }}</option>
-            {% endfor %}
-        </select>
-        <input type="number" name="min_salary" placeholder="Min salary" value="{{ min_salary or '' }}" style="max-width:130px;">
-        <select name="sort">
-            <option value="newest" {{ 'selected' if sort == 'newest' }}>Newest first</option>
-            <option value="oldest" {{ 'selected' if sort == 'oldest' }}>Oldest first</option>
-        </select>
-        <button type="submit">Search</button>
+        <div class="field" style="flex:2; min-width:220px;">
+            <label for="q">Search</label>
+            <input type="search" id="q" name="q" placeholder="e.g. remote backend roles that don't need 5+ years of Kubernetes" value="{{ q }}">
+        </div>
+        <div class="field" style="min-width:130px;">
+            <label for="work_mode">Work mode</label>
+            <select id="work_mode" name="work_mode">
+                {% for opt in ["any", "remote", "hybrid", "onsite"] %}
+                <option value="{{ opt }}" {{ 'selected' if work_mode == opt }}>{{ opt.capitalize() }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="field" style="max-width:130px;">
+            <label for="min_salary">Min salary</label>
+            <input type="number" id="min_salary" name="min_salary" placeholder="e.g. 100000" value="{{ min_salary or '' }}">
+        </div>
+        <div class="field" style="min-width:140px;">
+            <label for="sort">Sort by</label>
+            <select id="sort" name="sort">
+                <option value="newest" {{ 'selected' if sort == 'newest' }}>Newest first</option>
+                <option value="oldest" {{ 'selected' if sort == 'oldest' }}>Oldest first</option>
+            </select>
+        </div>
+        <button type="submit">Apply</button>
     </form>
 
+    <p class="field-hint" style="margin-top:18px;">Don't see the role you're after? Pull fresh postings straight from Adzuna right now — this skips the batch pipeline entirely, so results land here within seconds.</p>
     <form method="post" action="/jobs/fetch" class="fetch-form">
-        <input type="text" name="what" placeholder="Fetch new postings for a role…" required style="flex:2; min-width:200px;">
-        <input type="text" name="where" placeholder="Location (optional)" style="max-width:160px;">
+        <div class="field" style="flex:2; min-width:200px;">
+            <label for="what">Role</label>
+            <input type="text" id="what" name="what" placeholder="e.g. data engineer" required>
+        </div>
+        <div class="field" style="max-width:160px;">
+            <label for="where">Location</label>
+            <input type="text" id="where" name="where" placeholder="Optional">
+        </div>
         <button type="submit" class="secondary">Fetch from Adzuna</button>
     </form>
     {% endif %}
 
     {% if jobs %}
+        <p class="legend">Sponsorship and work-mode badges are guessed from the posting text, not confirmed by the employer — treat them as a hint to verify, not a fact.</p>
         {% for job in jobs %}
         <div class="job">
             <h3>{{ job.title }}</h3>
@@ -45,14 +66,14 @@
                 {% if job.salary_min or job.salary_max %} · ${{ "{:,}".format(job.salary_min) if job.salary_min else "?" }}–${{ "{:,}".format(job.salary_max) if job.salary_max else "?" }}{% endif %}
             </div>
             <div>
-                <span class="badge sponsor-{{ 'yes' if job.sponsorship_signal == 'mentions_sponsorship' else 'no' if job.sponsorship_signal == 'no_sponsorship_stated' else 'unknown' }}">
+                <span class="badge sponsor-{{ 'yes' if job.sponsorship_signal == 'mentions_sponsorship' else 'no' if job.sponsorship_signal == 'no_sponsorship_stated' else 'unknown' }}" title="Guessed from the posting text, not a confirmed employer policy">
                     {{ job.sponsorship_signal.replace('_', ' ') }}
                 </span>
-                <span class="badge mode">{{ job.work_mode_signal.replace('_', ' ') }}</span>
+                <span class="badge mode" title="Guessed from the posting text">{{ job.work_mode_signal.replace('_', ' ') }}</span>
                 {% if job.similarity %}<span class="similarity">{{ (job.similarity * 100) | round(1) }}% match</span>{% endif %}
             </div>
             <p class="snippet">{{ (job.chunk_text or job.description or "")[:220] }}…</p>
-            <form method="post" action="/jobs/{{ job.id }}/save" class="inline-form">
+            <form method="post" action="/jobs/{{ job.id }}/save" class="inline-form actions">
                 <select name="status" style="width:auto;">
                     {% for s in ["saved", "applied", "interviewing"] %}
                     <option value="{{ s }}">{{ s.capitalize() }}</option>

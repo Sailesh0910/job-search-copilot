@@ -2,7 +2,7 @@
 {% block title %}Pipeline — Job Copilot{% endblock %}
 {% block content %}
     <h1>Pipeline</h1>
-    <p class="subtitle">Everything you've saved or applied to.</p>
+    <p class="subtitle">Everything you've saved or applied to. Update the status as things move, draft a cover letter for a specific posting, or remove one you're no longer pursuing.</p>
 
     {% if error %}
     <div class="callout error">{{ error }}</div>
@@ -34,23 +34,22 @@
             <span class="badge status-{{ app.status }}">{{ app.status }}</span>
             <span class="meta" style="margin-left:6px;">updated {{ app.status_updated_at }}</span>
 
-            <form method="post" action="/pipeline/{{ app.job_posting_id }}/status" class="inline-form" style="margin-top:10px;">
-                <select name="new_status" style="width:auto;">
-                    {% for s in statuses %}
-                    <option value="{{ s }}" {{ 'selected' if s == app.status }}>{{ s.capitalize() }}</option>
-                    {% endfor %}
-                </select>
-                <button type="submit" class="secondary">Update status</button>
-                {% if app.url %}<a class="btn secondary" href="{{ app.url }}" target="_blank" rel="noopener">View posting</a>{% endif %}
-            </form>
-
-            <div class="inline-form" style="margin-top:8px;">
+            <div class="actions">
+                <form method="post" action="/pipeline/{{ app.job_posting_id }}/status" class="inline-form">
+                    <select name="new_status" style="width:auto;">
+                        {% for s in statuses %}
+                        <option value="{{ s }}" {{ 'selected' if s == app.status }}>{{ s.capitalize() }}</option>
+                        {% endfor %}
+                    </select>
+                    <button type="submit" class="secondary">Update status</button>
+                </form>
                 <form method="post" action="/pipeline/{{ app.job_posting_id }}/cover-letter">
                     <button type="submit" class="secondary">{{ 'Redraft cover letter' if app.cover_letter_draft else 'Draft cover letter' }}</button>
                 </form>
+                {% if app.url %}<a class="btn secondary" href="{{ app.url }}" target="_blank" rel="noopener">View posting</a>{% endif %}
                 <form method="post" action="/pipeline/{{ app.job_posting_id }}/remove"
-                      onsubmit="return confirm('Remove this from your pipeline? This cannot be undone.');">
-                    <button type="submit" class="secondary">Remove</button>
+                      onsubmit="return confirm('Remove this from your pipeline? This deletes it and any interview notes permanently — it cannot be undone.');">
+                    <button type="submit" class="danger" title="Permanently deletes this from your pipeline">Remove</button>
                 </form>
             </div>
 
@@ -65,11 +64,12 @@
                 <summary>Add interview note</summary>
                 <form method="post" action="/pipeline/{{ app.application_id }}/notes" style="margin-top:8px;">
                     <div class="field">
-                        <textarea name="note_text" placeholder="What happened, or what to remember" required></textarea>
+                        <label for="note_text-{{ app.application_id }}">What happened</label>
+                        <textarea id="note_text-{{ app.application_id }}" name="note_text" placeholder="e.g. Phone screen with the hiring manager, next step is a take-home" required></textarea>
                     </div>
                     <div class="field" style="max-width:200px;">
-                        <label>Interview date (optional)</label>
-                        <input type="date" name="interview_date">
+                        <label for="interview_date-{{ app.application_id }}">Date (optional)</label>
+                        <input type="date" id="interview_date-{{ app.application_id }}" name="interview_date">
                     </div>
                     <button type="submit" class="secondary">Save note</button>
                 </form>

@@ -81,7 +81,8 @@
 
         <div class="field">
             <label for="resume_text">Resume (paste as text)</label>
-            <textarea id="resume_text" name="resume_text" style="min-height:220px;">{{ profile.get('resume_text', '') }}</textarea>
+            <p class="field-hint">Paste your skills, experience, and achievements. No need to repeat your name or contact info, that's already covered above. Put your most relevant experience first: cover letter drafts only use the first ~1000 characters of this, so lead with what matters most for the roles you want.</p>
+            <textarea id="resume_text" name="resume_text" style="min-height:220px;" placeholder="e.g. Data Engineer with 3 years building Spark pipelines on Databricks...&#10;&#10;Experience:&#10;- ...&#10;&#10;Skills: Python, SQL, Spark, Airflow...">{{ profile.get('resume_text', '') }}</textarea>
         </div>
 
         <button type="submit" class="accent">Save profile</button>

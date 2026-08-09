@@ -42,12 +42,14 @@ def test_psycopg2_only_imported_in_lakebase():
     assert not offenders, f"psycopg2 imported outside lakebase.py: {offenders}"
 
 
-def test_requests_only_imported_in_adzuna_client():
+def test_requests_only_imported_in_adzuna_client_and_job_broker():
+    """job_broker.py's one exception is draft_cover_letter, which calls the
+    AI Gateway directly (no SDK wrapper covers that route today)."""
     offenders = [
-        f for f in _app_py_files(exclude={"adzuna_client.py"})
+        f for f in _app_py_files(exclude={"adzuna_client.py", "job_broker.py"})
         if "requests" in _top_level_imports(os.path.join(APP_DIR, f))
     ]
-    assert not offenders, f"requests imported outside adzuna_client.py: {offenders}"
+    assert not offenders, f"requests imported outside adzuna_client.py/job_broker.py: {offenders}"
 
 
 def test_main_never_imports_lakebase_directly():

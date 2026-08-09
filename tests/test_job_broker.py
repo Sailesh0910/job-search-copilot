@@ -1,13 +1,14 @@
 """
-job_broker.py is pure orchestration — it has no SQL and no HTTP calls of its
-own (that's the whole point of the broker pattern: main.py and mcp_tools.py
-both call into here instead of lakebase/adzuna_client/embeddings directly).
-These tests monkeypatch those three collaborators and verify job_broker
-wires them together correctly, without touching a database, the network, or
-a real Databricks workspace.
+job_broker.py is pure orchestration — it has no SQL of its own (that's the
+whole point of the broker pattern: main.py and mcp_tools.py both call into
+here instead of lakebase/adzuna_client/embeddings directly). The one
+exception is draft_cover_letter's direct call to the AI Gateway, which these
+tests monkeypatch alongside lakebase/embeddings/adzuna_client, so nothing
+here touches a database, the network, or a real Databricks workspace.
 """
 
 import pytest
+import requests as requests_module
 
 import job_broker
 
@@ -150,54 +151,32 @@ def test_draft_cover_letter_raises_when_no_profile(monkeypatch):
         job_broker.draft_cover_letter("job-1")
 
 
-class _FakeMessage:
-    def __init__(self, content):
-        self.content = content
+class _FakeConfig:
+    host = "https://example.cloud.databricks.com"
 
-
-class _FakeChoice:
-    def __init__(self, content):
-        self.message = _FakeMessage(content)
-
-
-class _FakeCompletionResponse:
-    def __init__(self, content):
-        self.choices = [_FakeChoice(content)]
-
-
-class _FakeCompletions:
-    def __init__(self, content):
-        self._content = content
-
-    def create(self, **kwargs):
-        return _FakeCompletionResponse(self._content)
-
-
-class _FakeChat:
-    def __init__(self, content):
-        self.completions = _FakeCompletions(content)
-
-
-class _FakeOpenAIClient:
-    def __init__(self, content):
-        self.chat = _FakeChat(content)
-
-
-class _FakeServingEndpoints:
-    def __init__(self, content):
-        self._content = content
-
-    def get_open_ai_client(self):
-        return _FakeOpenAIClient(self._content)
+    def authenticate(self):
+        return {"Authorization": "Bearer fake-token"}
 
 
 class _FakeWorkspaceClient:
-    """Stand-in for databricks.sdk.WorkspaceClient — set on the class so
-    every instance created inside draft_cover_letter returns canned content."""
-    response_content = "Dear hiring manager, ..."
-
+    """Stand-in for databricks.sdk.WorkspaceClient — only .config is used
+    by draft_cover_letter now, since the actual chat call goes through
+    requests.post directly against the AI Gateway."""
     def __init__(self):
-        self.serving_endpoints = _FakeServingEndpoints(self.response_content)
+        self.config = _FakeConfig()
+
+
+class _FakeResponse:
+    def __init__(self, content, status_ok=True):
+        self._content = content
+        self._status_ok = status_ok
+
+    def raise_for_status(self):
+        if not self._status_ok:
+            raise requests_module.HTTPError("404 model not found")
+
+    def json(self):
+        return {"choices": [{"message": {"content": self._content}}]}
 
 
 def test_draft_cover_letter_saves_and_returns_draft(monkeypatch):
@@ -205,6 +184,8 @@ def test_draft_cover_letter_saves_and_returns_draft(monkeypatch):
                          lambda pid: {"id": pid, "title": "DE", "company": "Acme", "description": "desc"})
     monkeypatch.setattr(job_broker.lakebase, "get_profile", lambda: {"full_name": "Alex"})
     monkeypatch.setattr("databricks.sdk.WorkspaceClient", _FakeWorkspaceClient)
+    monkeypatch.setattr(job_broker.requests, "post",
+                         lambda *a, **k: _FakeResponse("Dear hiring manager, ..."))
 
     saved = {}
     monkeypatch.setattr(job_broker.lakebase, "save_cover_letter",
@@ -217,18 +198,15 @@ def test_draft_cover_letter_saves_and_returns_draft(monkeypatch):
 
 
 def test_draft_cover_letter_wraps_serving_endpoint_failure(monkeypatch):
-    """A raw SDK exception (e.g. endpoint not found/enabled) should surface
+    """A raw HTTP/SDK exception (e.g. model not found/enabled) should surface
     as a clear, actionable RuntimeError — not an opaque traceback the MCP
     tool or web route has no way to interpret."""
     monkeypatch.setattr(job_broker.lakebase, "get_job_posting",
                          lambda pid: {"id": pid, "title": "DE", "company": "Acme", "description": "desc"})
     monkeypatch.setattr(job_broker.lakebase, "get_profile", lambda: {"full_name": "Alex"})
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient", _FakeWorkspaceClient)
+    monkeypatch.setattr(job_broker.requests, "post",
+                         lambda *a, **k: _FakeResponse(None, status_ok=False))
 
-    class _BrokenWorkspaceClient:
-        def __init__(self):
-            raise Exception("endpoint 'databricks-claude-sonnet-4-5' not found")
-
-    monkeypatch.setattr("databricks.sdk.WorkspaceClient", _BrokenWorkspaceClient)
-
-    with pytest.raises(RuntimeError, match="serving endpoint"):
+    with pytest.raises(RuntimeError, match="Cover letter drafting failed"):
         job_broker.draft_cover_letter("job-1")

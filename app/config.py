@@ -17,4 +17,4 @@ EMBEDDING_DIM = 768
 CHUNK_SIZE = 800
 CHUNK_OVERLAP = 100
 
-COVER_LETTER_MODEL = os.environ.get("COVER_LETTER_MODEL", "databricks-claude-sonnet-4-5")
+COVER_LETTER_MODEL = os.environ.get("COVER_LETTER_MODEL", "system.ai.llama-4-maverick")

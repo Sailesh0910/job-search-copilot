@@ -6,6 +6,8 @@ directly — they call into here, and this is the one place that logic lives.
 
 import os
 
+import requests
+
 import classify
 import embeddings
 import lakebase
@@ -182,22 +184,27 @@ Description: {posting['description'][:1500]}
         from databricks.sdk import WorkspaceClient
 
         w = WorkspaceClient()
-        openai_client = w.serving_endpoints.get_open_ai_client()
-        response = openai_client.chat.completions.create(
-            model=COVER_LETTER_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=400,
+        response = requests.post(
+            f"{w.config.host}/ai-gateway/mlflow/v1/chat/completions",
+            headers=w.config.authenticate(),
+            json={
+                "model": COVER_LETTER_MODEL,
+                "max_tokens": 400,
+                "messages": [{"role": "user", "content": prompt}],
+            },
+            timeout=30,
         )
-        draft = response.choices[0].message.content.strip()
+        response.raise_for_status()
+        draft = response.json()["choices"][0]["message"]["content"].strip()
     except Exception as e:
-        # The most common failure here is the serving endpoint named by
-        # COVER_LETTER_MODEL not existing/being enabled in this workspace —
-        # surface that directly rather than a raw SDK traceback the caller
-        # (the web route or an MCP tool) has no way to interpret.
+        # The most common failure here is COVER_LETTER_MODEL not being a
+        # valid model id in this workspace's AI Gateway — surface that
+        # directly rather than a raw traceback the caller (the web route or
+        # an MCP tool) has no way to interpret.
         raise RuntimeError(
-            f"Cover letter drafting failed calling serving endpoint "
-            f"'{COVER_LETTER_MODEL}': {e}. Check that this endpoint exists "
-            f"and is enabled in your workspace."
+            f"Cover letter drafting failed calling model "
+            f"'{COVER_LETTER_MODEL}': {e}. Check that this model is listed "
+            f"under AI Gateway > Models in your workspace."
         ) from e
 
     lakebase.save_cover_letter(job_posting_id, draft)

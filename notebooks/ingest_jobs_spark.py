@@ -1,3 +1,4 @@
+# Databricks notebook source
 """
 Spark ingestion: Adzuna API -> Delta table (job_postings_raw)
 
