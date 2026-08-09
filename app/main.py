@@ -22,6 +22,7 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.routing import Route
 
 import embeddings
 import job_broker
@@ -65,6 +66,33 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Job Hunting Copilot", lifespan=lifespan)
+
+
+class _McpBarePassthrough:
+    """
+    Forwards requests at exactly /mcp (no trailing slash) straight into the
+    mounted MCP app, bypassing Starlette's Mount, which otherwise 307s a
+    bare-prefix request to /mcp/ before it ever reaches the handler.
+    Confirmed necessary, not precautionary: Agent Bricks' MCP client (used
+    to register this app's tools) doesn't follow that redirect on POST, so
+    tool registration failed outright until this was added.
+
+    A class instance rather than a plain function, since Starlette's Route
+    wraps plain functions as request/response handlers; a callable object
+    is treated as an ASGI app already, which is what's needed here to
+    forward the raw (scope, receive, send) straight through.
+    """
+    async def __call__(self, scope, receive, send):
+        scope = dict(scope)
+        scope["path"] = "/"
+        scope["root_path"] = scope.get("root_path", "") + "/mcp"
+        await mcp_app(scope, receive, send)
+
+
+# Must be registered before the mount below — Starlette matches routes in
+# registration order, and this exact-path route needs to win over Mount's
+# own (redirecting) handling of the same bare path.
+app.router.routes.insert(0, Route("/mcp", _McpBarePassthrough(), methods=["GET", "POST", "DELETE"]))
 app.mount("/mcp", mcp_app)
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))

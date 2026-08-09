@@ -31,16 +31,16 @@ def test_healthz(client):
     assert resp.json() == {"status": "ok"}
 
 
-def test_mcp_bare_path_redirects_to_trailing_slash(client):
-    """/mcp/ (trailing slash) is the only path that actually reaches the MCP
-    handler — confirmed by direct reproduction, not assumption (an earlier
-    attempt to "fix" this by disabling redirect_slashes actually broke it,
-    turning a working redirect into a flat 404). This just documents that
-    the redirect stays in place, since a client that doesn't follow it is a
-    client-side problem, not something to route around here."""
+def test_mcp_bare_path_does_not_redirect(client):
+    """Regression test for a real production failure: Agent Bricks' MCP
+    client requests bare /mcp (no trailing slash) and doesn't follow
+    Starlette Mount's default 307-to-/mcp/ redirect, which broke tool
+    registration outright. The explicit passthrough route in main.py
+    intercepts bare /mcp before Mount's redirect logic runs — confirm it
+    no longer redirects (a 400/406 from the MCP handler itself, for a body
+    that isn't a real MCP request, is expected and fine here; a 307 is not)."""
     resp = client.post("/mcp", follow_redirects=False)
-    assert resp.status_code == 307
-    assert resp.headers["location"].rstrip("/").endswith("/mcp") or resp.headers["location"].endswith("/mcp/")
+    assert resp.status_code != 307
 
 
 def test_dashboard_loads(client, monkeypatch):
