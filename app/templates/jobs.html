@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Recommended' if mode == 'recommended' else 'Browse' }} — Job Copilot{% endblock %}
+{% block content %}
+    <h1>{{ 'Recommended for you' if mode == 'recommended' else 'Browse jobs' }}</h1>
+    <p class="subtitle">
+        {% if mode == 'recommended' %}
+            Ranked against your saved profile — no search needed.
+        {% else %}
+            Search what's already been ingested, or fetch new postings for a specific role right now.
+        {% endif %}
+    </p>
+
+    {% if error %}
+    <div class="callout error">{{ error }}</div>
+    {% endif %}
+
+    {% if mode != 'recommended' %}
+    <form method="get" action="/jobs" class="filters">
+        <input type="search" name="q" placeholder="Describe the role you want…" value="{{ q }}" style="flex:2; min-width:220px;">
+        <select name="work_mode">
+            {% for opt in ["any", "remote", "hybrid", "onsite"] %}
+            <option value="{{ opt }}" {{ 'selected' if work_mode == opt }}>{{ opt.capitalize() }}</option>
+            {% endfor %}
+        </select>
+        <input type="number" name="min_salary" placeholder="Min salary" value="{{ min_salary }}" style="max-width:130px;">
+        <select name="sort">
+            <option value="newest" {{ 'selected' if sort == 'newest' }}>Newest first</option>
+            <option value="oldest" {{ 'selected' if sort == 'oldest' }}>Oldest first</option>
+        </select>
+        <button type="submit">Search</button>
+    </form>
+
+    <form method="post" action="/jobs/fetch" class="fetch-form">
+        <input type="text" name="what" placeholder="Fetch new postings for a role…" required style="flex:2; min-width:200px;">
+        <input type="text" name="where" placeholder="Location (optional)" style="max-width:160px;">
+        <button type="submit" class="secondary">Fetch from Adzuna</button>
+    </form>
+    {% endif %}
+
+    {% if jobs %}
+        {% for job in jobs %}
+        <div class="job">
+            <h3>{{ job.title }}</h3>
+            <div class="meta">{{ job.company or "Unknown company" }} · {{ job.location or "Location not listed" }}
+                {% if job.salary_min or job.salary_max %} · ${{ "{:,}".format(job.salary_min) if job.salary_min else "?" }}–${{ "{:,}".format(job.salary_max) if job.salary_max else "?" }}{% endif %}
+            </div>
+            <div>
+                <span class="badge sponsor-{{ 'yes' if job.sponsorship_signal == 'mentions_sponsorship' else 'no' if job.sponsorship_signal == 'no_sponsorship_stated' else 'unknown' }}">
+                    {{ job.sponsorship_signal.replace('_', ' ') }}
+                </span>
+                <span class="badge mode">{{ job.work_mode_signal.replace('_', ' ') }}</span>
+                {% if job.similarity %}<span class="similarity">{{ (job.similarity * 100) | round(1) }}% match</span>{% endif %}
+            </div>
+            <p class="snippet">{{ (job.chunk_text or job.description or "")[:220] }}…</p>
+            <form method="post" action="/jobs/{{ job.id }}/save" class="inline-form">
+                <select name="status" style="width:auto;">
+                    {% for s in ["saved", "applied", "interviewing"] %}
+                    <option value="{{ s }}">{{ s.capitalize() }}</option>
+                    {% endfor %}
+                </select>
+                <button type="submit" class="secondary">Add to pipeline</button>
+                {% if job.url %}<a class="btn secondary" href="{{ job.url }}" target="_blank" rel="noopener">View posting</a>{% endif %}
+            </form>
+        </div>
+        {% endfor %}
+    {% else %}
+        <p class="empty">
+            {% if mode == 'recommended' %}
+                No profile saved yet, or nothing's been ingested. <a href="/profile">Set up your profile</a> first.
+            {% else %}
+                Nothing found. Try fetching new postings for this role above.
+            {% endif %}
+        </p>
+    {% endif %}
+{% endblock %}

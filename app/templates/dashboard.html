@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Job Copilot{% endblock %}
+{% block content %}
+    <h1>Dashboard</h1>
+    <p class="subtitle">Your pipeline at a glance, and the last few batch runs.</p>
+
+    <div class="stat-row">
+        {% for status in ["saved", "applied", "interviewing", "rejected", "offer"] %}
+        <div class="stat">
+            <span class="n">{{ stats.get(status, 0) }}</span>
+            <span class="label">{{ status.capitalize() }}</span>
+        </div>
+        {% endfor %}
+    </div>
+
+    <h2>Recent pipeline runs</h2>
+    {% if recent_runs %}
+        {% for run in recent_runs %}
+        <div class="card">
+            <strong>{{ run.job_name }}</strong>
+            <span class="badge status-{{ 'saved' if run.status == 'success' else 'rejected' if run.status == 'failed' else 'applied' }}">
+                {{ run.status }}
+            </span>
+            <div class="job meta" style="margin-top:6px;">
+                started {{ run.started_at }}
+                {% if run.rows_processed is not none %} · {{ run.rows_processed }} rows{% endif %}
+            </div>
+            {% if run.error_message %}
+            <div class="callout error" style="margin-top:8px; margin-bottom:0;">{{ run.error_message }}</div>
+            {% endif %}
+        </div>
+        {% endfor %}
+    {% else %}
+        <p class="empty">No pipeline runs yet — run the notebooks in <code>notebooks/</code> to ingest postings.</p>
+    {% endif %}
+
+    <h2>Get started</h2>
+    <p>
+        <a class="btn" href="/profile">Set up your profile</a>
+        <a class="btn secondary" href="/jobs">Browse jobs</a>
+    </p>
+{% endblock %}

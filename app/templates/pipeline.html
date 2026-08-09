@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Pipeline — Job Copilot{% endblock %}
+{% block content %}
+    <h1>Pipeline</h1>
+    <p class="subtitle">Everything you've saved or applied to.</p>
+
+    {% if stale %}
+    <div class="callout">
+        <strong>{{ stale|length }} application{{ 's' if stale|length != 1 }} need follow-up</strong> — no status change in 14+ days:
+        {% for s in stale %} {{ s.title }} at {{ s.company }}{{ ", " if not loop.last }}{% endfor %}
+    </div>
+    {% endif %}
+
+    <div class="status-tabs">
+        <a href="/pipeline" class="{{ 'active' if not current_status }}">All</a>
+        {% for s in statuses %}
+        <a href="/pipeline?status={{ s }}" class="{{ 'active' if current_status == s }}">{{ s.capitalize() }}</a>
+        {% endfor %}
+    </div>
+
+    {% if applications %}
+        {% for app in applications %}
+        <div class="job">
+            <h3>{{ app.title }}</h3>
+            <div class="meta">{{ app.company or "Unknown company" }} · {{ app.location or "" }}
+                {% if app.salary_min or app.salary_max %} · ${{ "{:,}".format(app.salary_min) if app.salary_min else "?" }}-${{ "{:,}".format(app.salary_max) if app.salary_max else "?" }}{% endif %}
+            </div>
+            <span class="badge status-{{ app.status }}">{{ app.status }}</span>
+            <span class="meta" style="margin-left:6px;">updated {{ app.status_updated_at }}</span>
+
+            <form method="post" action="/pipeline/{{ app.job_posting_id }}/status" class="inline-form" style="margin-top:10px;">
+                <select name="new_status" style="width:auto;">
+                    {% for s in statuses %}
+                    <option value="{{ s }}" {{ 'selected' if s == app.status }}>{{ s.capitalize() }}</option>
+                    {% endfor %}
+                </select>
+                <button type="submit" class="secondary">Update status</button>
+                {% if app.url %}<a class="btn secondary" href="{{ app.url }}" target="_blank" rel="noopener">View posting</a>{% endif %}
+            </form>
+
+            {% if app.cover_letter_draft %}
+            <details>
+                <summary>Cover letter draft</summary>
+                <div class="draft-text">{{ app.cover_letter_draft }}</div>
+            </details>
+            {% endif %}
+
+            <details>
+                <summary>Add interview note</summary>
+                <form method="post" action="/pipeline/{{ app.application_id }}/notes" style="margin-top:8px;">
+                    <div class="field">
+                        <textarea name="note_text" placeholder="What happened, or what to remember" required></textarea>
+                    </div>
+                    <div class="field" style="max-width:200px;">
+                        <label>Interview date (optional)</label>
+                        <input type="date" name="interview_date">
+                    </div>
+                    <button type="submit" class="secondary">Save note</button>
+                </form>
+            </details>
+        </div>
+        {% endfor %}
+    {% else %}
+        <p class="empty">Nothing here yet. <a href="/jobs">Browse jobs</a> and add some to your pipeline.</p>
+    {% endif %}
+{% endblock %}

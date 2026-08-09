@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}Profile — Job Copilot{% endblock %}
+{% block content %}
+    <h1>Your profile</h1>
+    <p class="subtitle">Hard filters narrow search results directly. Everything else feeds the semantic match — no need to predict every preference as its own field.</p>
+
+    {% if request.query_params.get('saved') %}
+    <div class="callout">Saved.</div>
+    {% endif %}
+
+    <form method="post" action="/profile">
+        <div class="field">
+            <label for="full_name">Full name</label>
+            <input type="text" id="full_name" name="full_name" value="{{ profile.get('full_name', '') }}">
+        </div>
+
+        <div class="field">
+            <label for="target_roles">Target roles</label>
+            <input type="text" id="target_roles" name="target_roles" placeholder="Backend Engineer, Data Engineer" value="{{ profile.get('target_roles', '') }}">
+        </div>
+
+        <h2>Hard filters</h2>
+        <p class="subtitle" style="margin-bottom:14px;">These directly narrow which postings show up.</p>
+
+        <div class="field-row">
+            <div class="field">
+                <label for="years_experience">Years of experience</label>
+                <input type="number" id="years_experience" name="years_experience" min="0" value="{{ profile.get('years_experience', '') }}">
+            </div>
+            <div class="field">
+                <label for="min_salary">Minimum salary</label>
+                <input type="number" id="min_salary" name="min_salary" min="0" step="1000" value="{{ profile.get('min_salary', '') }}">
+            </div>
+        </div>
+
+        <div class="field-row">
+            <div class="field">
+                <label for="location_preference">Location</label>
+                <input type="text" id="location_preference" name="location_preference" placeholder="any, or a city/state" value="{{ profile.get('location_preference', 'any') }}">
+            </div>
+            <div class="field">
+                <label for="remote_preference">Work arrangement</label>
+                <select id="remote_preference" name="remote_preference">
+                    {% for opt in ["any", "remote", "hybrid", "onsite"] %}
+                    <option value="{{ opt }}" {{ 'selected' if profile.get('remote_preference', 'any') == opt }}>{{ opt.capitalize() }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+        </div>
+
+        <div class="field">
+            <label>
+                <input type="checkbox" name="sponsorship_required" value="true" {{ 'checked' if profile.get('sponsorship_required') }} style="width:auto; display:inline;">
+                Visa sponsorship is a must-have
+            </label>
+            <p class="subtitle" style="margin:4px 0 0; font-size:0.82rem;">Excludes only postings that explicitly say they don't sponsor — most postings simply don't mention it either way, and those stay included.</p>
+        </div>
+
+        <h2>Soft preferences</h2>
+        <p class="subtitle" style="margin-bottom:14px;">These get folded into semantic matching rather than filtering results directly.</p>
+
+        <div class="field">
+            <label for="work_authorization">Work authorization</label>
+            <input type="text" id="work_authorization" name="work_authorization" placeholder="e.g. F1 STEM OPT, will need H1B" value="{{ profile.get('work_authorization', '') }}">
+        </div>
+
+        <div class="field">
+            <label for="tech_stack_musthaves">Tech stack / must-haves</label>
+            <input type="text" id="tech_stack_musthaves" name="tech_stack_musthaves" placeholder="Python, AWS, not Java-only roles" value="{{ profile.get('tech_stack_musthaves', '') }}">
+        </div>
+
+        <div class="field">
+            <label for="company_size_pref">Company size preference</label>
+            <input type="text" id="company_size_pref" name="company_size_pref" placeholder="startup or mid-size, not F500" value="{{ profile.get('company_size_pref', '') }}">
+        </div>
+
+        <div class="field">
+            <label for="other_notes">Anything else</label>
+            <textarea id="other_notes" name="other_notes" placeholder="Anything not covered above">{{ profile.get('other_notes', '') }}</textarea>
+        </div>
+
+        <div class="field">
+            <label for="resume_text">Resume (paste as text)</label>
+            <textarea id="resume_text" name="resume_text" style="min-height:220px;">{{ profile.get('resume_text', '') }}</textarea>
+        </div>
+
+        <button type="submit" class="accent">Save profile</button>
+    </form>
+{% endblock %}
