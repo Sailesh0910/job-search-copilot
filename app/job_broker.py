@@ -243,27 +243,14 @@ def _extract_sse_error(raw_text: str):
     return None
 
 
-def chat_with_agent(messages: list) -> str:
-    """
-    Sends the full conversation so far (a list of {"role", "content"} dicts)
-    to the Supervisor Agent and returns its reply text.
-
-    Uses the OpenAI Responses API shape the agent endpoint expects
-    (POST {host}/serving-endpoints/responses with a "model" and "input"
-    field), not the chat-completions shape draft_cover_letter uses above.
-    """
+def _post_responses(host: str, headers: dict, payload: dict) -> dict:
+    """POSTs one request to the agent's Responses API endpoint and returns
+    the parsed JSON body, or raises a RuntimeError with the real cause."""
     try:
-        from databricks.sdk import WorkspaceClient
-
-        w = WorkspaceClient()
         response = requests.post(
-            f"{w.config.host}/serving-endpoints/responses",
-            headers=w.config.authenticate(),
-            json={
-                "model": SUPERVISOR_AGENT_ENDPOINT,
-                "input": messages,
-                "stream": False,
-            },
+            f"{host}/serving-endpoints/responses",
+            headers=headers,
+            json=payload,
             timeout=120,
         )
         response.raise_for_status()
@@ -275,7 +262,7 @@ def chat_with_agent(messages: list) -> str:
         ) from e
 
     try:
-        data = response.json()
+        return response.json()
     except ValueError as e:
         # response.json() only raises this on a body that isn't valid JSON.
         # Despite stream: False, the endpoint may still reply as
@@ -294,13 +281,69 @@ def chat_with_agent(messages: list) -> str:
             f"{response.text[:500]!r}"
         ) from e
 
+
+def chat_with_agent(messages: list) -> str:
+    """
+    Sends the full conversation so far (a list of {"role", "content"} dicts)
+    to the Supervisor Agent and returns its reply text.
+
+    Uses the OpenAI Responses API shape the agent endpoint expects
+    (POST {host}/serving-endpoints/responses with a "model" and "input"
+    field), not the chat-completions shape draft_cover_letter uses above.
+    """
+    try:
+        from databricks.sdk import WorkspaceClient
+
+        w = WorkspaceClient()
+        host = w.config.host
+        headers = w.config.authenticate()
+    except Exception as e:
+        raise RuntimeError(
+            f"Chat request to the agent failed: {e}. Check that the agent "
+            f"endpoint '{SUPERVISOR_AGENT_ENDPOINT}' is deployed and "
+            f"reachable."
+        ) from e
+
+    data = _post_responses(host, headers, {
+        "model": SUPERVISOR_AGENT_ENDPOINT,
+        "input": messages,
+        "stream": False,
+    })
+
+    # A tool call through this app's MCP server can come back pending
+    # approval (an "mcp_approval_request" output item) instead of a final
+    # answer — the OpenAI Responses API's standard mechanism for gating MCP
+    # tool calls, which Agent Bricks' Playground has a UI for approving.
+    # /chat has no such UI, so without this the conversation just stalls on
+    # "let me check that" forever. Auto-approve instead: this app is
+    # single-user, and the one genuinely irreversible tool
+    # (remove_saved_job) already enforces its own two-step confirmation
+    # independently of this, so this platform-level gate isn't adding real
+    # safety here, it's only in the way. Capped at 5 rounds so a bug can't
+    # loop forever.
+    for _ in range(5):
+        approval_requests = [
+            item for item in data.get("output", [])
+            if item.get("type") == "mcp_approval_request"
+        ]
+        if not approval_requests:
+            break
+        logger.info("chat_with_agent auto-approving %d MCP tool call(s)", len(approval_requests))
+        data = _post_responses(host, headers, {
+            "model": SUPERVISOR_AGENT_ENDPOINT,
+            "previous_response_id": data.get("id"),
+            "input": [
+                {
+                    "type": "mcp_approval_response",
+                    "approval_request_id": req["id"],
+                    "approve": True,
+                }
+                for req in approval_requests
+            ],
+            "stream": False,
+        })
+
     output_items = data.get("output", [])
-    # Log the shape of every call, not just failures — a short or seemingly
-    # incomplete reply (e.g. only a "let me check that" preamble, with the
-    # actual answer missing) isn't an exception, so it wouldn't otherwise
-    # leave any trace to diagnose from. item types + text lengths are
-    # enough to tell what's actually in the response without dumping
-    # everything.
     logger.info(
         "chat_with_agent output items: %s",
         [(item.get("type"), len(item.get("content", []) or [])) for item in output_items],

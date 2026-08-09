@@ -274,6 +274,82 @@ def test_chat_with_agent_wraps_failure(monkeypatch):
         job_broker.chat_with_agent([{"role": "user", "content": "hi"}])
 
 
+class _FakeApprovalFlowResponse:
+    """A canned .json()-returning response used to script a fixed sequence
+    of raw response bodies for the auto-approval loop."""
+    def __init__(self, body):
+        self._body = body
+        self.status_code = 200
+        self.text = ""
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._body
+
+
+def test_chat_with_agent_auto_approves_pending_mcp_tool_calls(monkeypatch):
+    """Regression test for the real stuck-chat bug: a tool call through this
+    app's MCP server can come back as an mcp_approval_request instead of a
+    final answer. /chat has no UI to approve it (unlike the Playground), so
+    this must auto-approve and continue, rather than surface the bare
+    "let me check that" preamble as if it were the whole reply."""
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient", _FakeWorkspaceClient)
+
+    first_response = {
+        "id": "resp_1",
+        "output": [
+            {"type": "message", "content": [{"text": "I'll check that for you."}]},
+            {"type": "mcp_approval_request", "id": "mcpr_1"},
+        ],
+    }
+    final_response = {
+        "id": "resp_2",
+        "output": [{"type": "message", "content": [{"text": "Here is your cover letter draft."}]}],
+    }
+    calls = []
+
+    def fake_post(url, headers, json, timeout):
+        calls.append(json)
+        body = first_response if len(calls) == 1 else final_response
+        return _FakeApprovalFlowResponse(body)
+
+    monkeypatch.setattr(job_broker.requests, "post", fake_post)
+
+    reply = job_broker.chat_with_agent([{"role": "user", "content": "Draft a cover letter"}])
+
+    assert reply == "Here is your cover letter draft."
+    assert len(calls) == 2
+    assert calls[1]["previous_response_id"] == "resp_1"
+    assert calls[1]["input"] == [
+        {"type": "mcp_approval_response", "approval_request_id": "mcpr_1", "approve": True}
+    ]
+
+
+def test_chat_with_agent_approval_loop_is_capped(monkeypatch):
+    """If the endpoint somehow keeps returning approval requests forever,
+    this must not hang the request indefinitely."""
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient", _FakeWorkspaceClient)
+
+    always_pending = {
+        "id": "resp_loop",
+        "output": [{"type": "mcp_approval_request", "id": "mcpr_loop"}],
+    }
+    calls = []
+
+    def fake_post(url, headers, json, timeout):
+        calls.append(json)
+        return _FakeApprovalFlowResponse(always_pending)
+
+    monkeypatch.setattr(job_broker.requests, "post", fake_post)
+
+    with pytest.raises(RuntimeError, match="no text output"):
+        job_broker.chat_with_agent([{"role": "user", "content": "hi"}])
+
+    assert len(calls) == 6  # 1 initial + 5 capped approval rounds
+
+
 def test_chat_with_agent_extracts_message_from_sse_error_frame(monkeypatch):
     """Regression test for the real failure hit in production: the agent
     endpoint replied 200 but as an SSE error frame (tool registration
