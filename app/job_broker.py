@@ -5,6 +5,7 @@ directly — they call into here, and this is the one place that logic lives.
 """
 
 import json
+import logging
 import os
 
 import requests
@@ -15,6 +16,8 @@ import lakebase
 from adzuna_client import AdzunaClient
 from config import COVER_LETTER_MODEL, SUPERVISOR_AGENT_ENDPOINT
 from lakebase import LakebaseError  # re-exported so callers never import lakebase directly
+
+logger = logging.getLogger(__name__)
 
 
 def ensure_schema() -> None:
@@ -291,9 +294,21 @@ def chat_with_agent(messages: list) -> str:
             f"{response.text[:500]!r}"
         ) from e
 
+    output_items = data.get("output", [])
+    # Log the shape of every call, not just failures — a short or seemingly
+    # incomplete reply (e.g. only a "let me check that" preamble, with the
+    # actual answer missing) isn't an exception, so it wouldn't otherwise
+    # leave any trace to diagnose from. item types + text lengths are
+    # enough to tell what's actually in the response without dumping
+    # everything.
+    logger.info(
+        "chat_with_agent output items: %s",
+        [(item.get("type"), len(item.get("content", []) or [])) for item in output_items],
+    )
+
     reply = " ".join(
         content.get("text", "")
-        for output in data.get("output", [])
+        for output in output_items
         for content in output.get("content", [])
     ).strip()
 
