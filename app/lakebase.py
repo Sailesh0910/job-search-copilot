@@ -1,7 +1,7 @@
 """
 Lakebase (Postgres) connection and data access for the job hunting copilot.
 
-Connection comes from a single JOB_COPILOT_CONNECTION_STRING env var, wired
+Connection comes from a single LAKEBASE_CONNECTION_STRING env var, wired
 in via app.yaml's valueFrom pointing at a Databricks secret. No dbutils —
 deployed apps run outside a notebook context, so os.environ is the only
 thing that works in both the app and the batch scripts.
@@ -58,10 +58,10 @@ class LakebaseError(Exception):
 
 
 def _connection_string() -> str:
-    conn_string = os.environ.get("JOB_COPILOT_CONNECTION_STRING")
+    conn_string = os.environ.get("LAKEBASE_CONNECTION_STRING")
     if not conn_string:
         raise LakebaseError(
-            "JOB_COPILOT_CONNECTION_STRING is not set. In Databricks Apps this "
+            "LAKEBASE_CONNECTION_STRING is not set. In Databricks Apps this "
             "should be wired in app.yaml via a 'valueFrom' pointing at your secret."
         )
     return conn_string
@@ -72,7 +72,7 @@ def _get_pool() -> psycopg2_pool.ThreadedConnectionPool:
     Lazily creates the connection pool on first use (double-checked locking,
     since FastAPI can call this from multiple request threads). Lazy rather
     than created at import time so importing lakebase.py doesn't require
-    JOB_COPILOT_CONNECTION_STRING to already be set — e.g. a notebook that
+    LAKEBASE_CONNECTION_STRING to already be set — e.g. a notebook that
     only calls track_run() shouldn't need it.
     """
     global _pool

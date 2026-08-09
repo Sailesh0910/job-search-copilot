@@ -50,7 +50,7 @@ Three secrets, same pattern as every other assignment this week:
 
 ```bash
 databricks secrets create-scope job-copilot
-databricks secrets put-secret job-copilot JOB_COPILOT_CONNECTION_STRING
+databricks secrets put-secret job-copilot LAKEBASE_CONNECTION_STRING
 databricks secrets put-secret job-copilot ADZUNA_APP_ID
 databricks secrets put-secret job-copilot ADZUNA_APP_KEY
 ```
@@ -104,7 +104,7 @@ Postgres database, makes a real HTTP call to Adzuna, or downloads the real
 embedding model. Every external dependency (Lakebase, Adzuna, the
 sentence-transformers model, the Databricks SDK's serving-endpoint client)
 is faked at the seam the app itself calls through, so `pytest` runs the same
-whether or not `JOB_COPILOT_CONNECTION_STRING`, `ADZUNA_APP_ID`, or
+whether or not `LAKEBASE_CONNECTION_STRING`, `ADZUNA_APP_ID`, or
 `ADZUNA_APP_KEY` are set — useful for verifying the logic before you've
 provisioned anything.
 
