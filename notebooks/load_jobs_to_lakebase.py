@@ -21,7 +21,14 @@ Run in a Databricks notebook, or as a Job task, after ingest_jobs_spark.py.
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "app"))
+# __file__ isn't defined when this runs as an actual Databricks notebook
+# (only when run as a plain script) — os.getcwd() is Databricks' documented
+# fallback, since Git-folder notebooks default to their own directory.
+try:
+    _this_dir = os.path.dirname(os.path.abspath(__file__))
+except NameError:
+    _this_dir = os.getcwd()
+sys.path.insert(0, os.path.join(_this_dir, "..", "app"))
 
 from pyspark.sql import SparkSession, Window, functions as F
 
