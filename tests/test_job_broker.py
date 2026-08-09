@@ -222,6 +222,8 @@ class _FakeResponsesResponse:
     def __init__(self, text, status_ok=True):
         self._text = text
         self._status_ok = status_ok
+        self.status_code = 200 if status_ok else 503
+        self.text = text if isinstance(text, str) else ""
 
     def raise_for_status(self):
         if not self._status_ok:
@@ -229,6 +231,19 @@ class _FakeResponsesResponse:
 
     def json(self):
         return {"output": [{"content": [{"text": self._text}]}]}
+
+
+class _FakeNonJsonResponse:
+    """A 200 whose body isn't valid JSON (e.g. empty), which is what a plain
+    response.json() call turns into an opaque 'Expecting value' error."""
+    status_code = 200
+    text = ""
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        raise ValueError("Expecting value: line 1 column 1 (char 0)")
 
 
 def test_chat_with_agent_returns_reply(monkeypatch):
@@ -256,6 +271,17 @@ def test_chat_with_agent_wraps_failure(monkeypatch):
                          lambda *a, **k: _FakeResponsesResponse(None, status_ok=False))
 
     with pytest.raises(RuntimeError, match="Chat request to the agent failed"):
+        job_broker.chat_with_agent([{"role": "user", "content": "hi"}])
+
+
+def test_chat_with_agent_wraps_non_json_response_with_status_and_body(monkeypatch):
+    """A 200 with an unparseable (often empty) body previously surfaced as
+    a bare 'Expecting value' error with no way to tell what actually came
+    back. This should include the real status code and raw body instead."""
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient", _FakeWorkspaceClient)
+    monkeypatch.setattr(job_broker.requests, "post", lambda *a, **k: _FakeNonJsonResponse())
+
+    with pytest.raises(RuntimeError, match="non-JSON response \\(status 200\\)"):
         job_broker.chat_with_agent([{"role": "user", "content": "hi"}])
 
 

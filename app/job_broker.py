@@ -242,12 +242,6 @@ def chat_with_agent(messages: list) -> str:
             timeout=120,
         )
         response.raise_for_status()
-        data = response.json()
-        reply = " ".join(
-            content.get("text", "")
-            for output in data.get("output", [])
-            for content in output.get("content", [])
-        ).strip()
     except Exception as e:
         raise RuntimeError(
             f"Chat request to the agent failed: {e}. Check that the agent "
@@ -255,6 +249,28 @@ def chat_with_agent(messages: list) -> str:
             f"reachable."
         ) from e
 
+    try:
+        data = response.json()
+    except ValueError as e:
+        # response.json() only raises this on a body that isn't valid JSON
+        # (often empty) — surface the actual status/body, since that's the
+        # one piece of information needed to tell what's actually coming
+        # back, and a bare "Expecting value" message can't tell us that.
+        raise RuntimeError(
+            f"Agent endpoint '{SUPERVISOR_AGENT_ENDPOINT}' returned a "
+            f"non-JSON response (status {response.status_code}): "
+            f"{response.text[:500]!r}"
+        ) from e
+
+    reply = " ".join(
+        content.get("text", "")
+        for output in data.get("output", [])
+        for content in output.get("content", [])
+    ).strip()
+
     if not reply:
-        raise RuntimeError("The agent responded with no text output.")
+        raise RuntimeError(
+            f"The agent responded with no text output. Raw response: "
+            f"{str(data)[:500]!r}"
+        )
     return reply
