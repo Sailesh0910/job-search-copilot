@@ -108,9 +108,36 @@ def view_pipeline(status: str = None) -> dict:
                 'rejected', 'offer'. Omit for everything.
 
     Returns:
-        Dict with 'applications': tracked postings with their status.
+        Dict with 'applications': tracked postings with their status. Each
+        entry includes posting_possibly_stale — a heuristic (the posting is
+        old) rather than a live recheck of whether the listing is still up;
+        present it as a hint to verify, not a fact.
     """
     return {"applications": job_broker.get_pipeline(status=status)}
+
+
+@mcp.tool()
+def remove_saved_job(job_posting_id: str) -> dict:
+    """
+    Removes a posting from the pipeline entirely — not a status change, the
+    tracked application and any interview notes on it are deleted. Use this
+    only when the user explicitly asks to remove, delete, or un-save a
+    posting, never as a side effect of another request. Always confirm with
+    the user before calling this, the same as changing a status they didn't
+    ask to change — unlike a status change, this can't be undone.
+
+    Args:
+        job_posting_id: The posting's id, from view_pipeline.
+
+    Returns:
+        Dict with 'removed': True if a tracked application existed and was
+        deleted, False if there was nothing to remove.
+    """
+    try:
+        result = job_broker.remove_from_pipeline(job_posting_id)
+        return {"removed": result is not None}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @mcp.tool()
@@ -145,7 +172,7 @@ def draft_cover_letter(job_posting_id: str) -> dict:
     """
     try:
         return {"draft": job_broker.draft_cover_letter(job_posting_id)}
-    except ValueError as e:
+    except (ValueError, RuntimeError) as e:
         return {"error": str(e)}
 
 

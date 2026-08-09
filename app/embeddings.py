@@ -2,21 +2,26 @@
 Embedding helpers, shared by the web routes, the MCP tools, and the batch
 ingestion script.
 
-The model loads once at import time. That's deliberate: SentenceTransformer
-loads several hundred MB into memory and takes a few seconds to initialize,
-so doing it per-request would make every search painfully slow. Importing this
-module anywhere in the app gets the same already-loaded instance.
+The model is lazily loaded on first use (see get_model()) and cached at
+module level from then on. It's not loaded at import time — SentenceTransformer
+pulls several hundred MB into memory and takes a few seconds to initialize, so
+main.py's lifespan explicitly warms it once at startup rather than paying that
+cost on the first real request. Importing this module anywhere in the app
+gets the same already-loaded instance once warmed.
+
+MODEL_NAME/EMBEDDING_DIM/CHUNK_SIZE/CHUNK_OVERLAP live in config.py, not here,
+so lakebase.py (which needs EMBEDDING_DIM for its vector(N) casts) doesn't have
+to import this module and pull sentence-transformers/torch into every process
+that touches the database, including ones that never embed anything.
 """
 
 from typing import Dict, List, Optional
 
 from sentence_transformers import SentenceTransformer
 
-MODEL_NAME = "sentence-transformers/all-mpnet-base-v2"
-EMBEDDING_DIM = 768
+from config import CHUNK_OVERLAP, CHUNK_SIZE, EMBEDDING_DIM, EMBEDDING_MODEL_NAME
 
-CHUNK_SIZE = 800
-CHUNK_OVERLAP = 100
+MODEL_NAME = EMBEDDING_MODEL_NAME
 
 _model: Optional[SentenceTransformer] = None
 
@@ -30,15 +35,15 @@ def get_model() -> SentenceTransformer:
 
 
 def embed(text: str) -> List[float]:
-    """Embeds a single string into a 768-dim vector."""
+    """Embeds a single string into an EMBEDDING_DIM-dim vector."""
     return get_model().encode(text).tolist()
 
 
 def embed_batch(texts: List[str]) -> List[List[float]]:
     """
     Embeds many strings at once. Meaningfully faster than looping over embed()
-    because the model batches them through the network in one pass rather than
-    one forward pass per string.
+    because the model batches them through one forward pass rather than
+    running inference once per string.
     """
     return [vec.tolist() for vec in get_model().encode(texts)]
 

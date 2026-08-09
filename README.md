@@ -76,7 +76,7 @@ search rather than editing code):
 
 1. `ingest_jobs_spark.py` — Adzuna → Delta
 2. `load_jobs_to_lakebase.py` — Delta → Lakebase
-3. `ingest_job_embeddings.py` — embeds postings and your profile
+3. `ingest_jobs_embeddings.py` — embeds postings and your profile
 
 Or skip straight to the app and use the "Fetch from Adzuna" box on the
 Jobs page for a quick single-role live fetch instead.
@@ -91,6 +91,22 @@ semantic matching and cover letter drafting are built on.
 Agent Bricks → Create Agent → Supervisor Agent → Add a Databricks App (not
 Add a UC MCP Service) → select this app. See `AGENT_CONFIG.md` for the
 system prompt to paste in.
+
+## Testing
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+The test suite is entirely self-contained — it never touches a real
+Postgres database, makes a real HTTP call to Adzuna, or downloads the real
+embedding model. Every external dependency (Lakebase, Adzuna, the
+sentence-transformers model, the Databricks SDK's serving-endpoint client)
+is faked at the seam the app itself calls through, so `pytest` runs the same
+whether or not `JOB_COPILOT_CONNECTION_STRING`, `ADZUNA_APP_ID`, or
+`ADZUNA_APP_KEY` are set — useful for verifying the logic before you've
+provisioned anything.
 
 ## Known limitations
 

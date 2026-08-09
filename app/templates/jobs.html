@@ -22,7 +22,7 @@
             <option value="{{ opt }}" {{ 'selected' if work_mode == opt }}>{{ opt.capitalize() }}</option>
             {% endfor %}
         </select>
-        <input type="number" name="min_salary" placeholder="Min salary" value="{{ min_salary }}" style="max-width:130px;">
+        <input type="number" name="min_salary" placeholder="Min salary" value="{{ min_salary or '' }}" style="max-width:130px;">
         <select name="sort">
             <option value="newest" {{ 'selected' if sort == 'newest' }}>Newest first</option>
             <option value="oldest" {{ 'selected' if sort == 'oldest' }}>Oldest first</option>
@@ -63,6 +63,17 @@
             </form>
         </div>
         {% endfor %}
+
+        {% if mode == 'browse' and (page > 1 or has_more) %}
+        <div style="display:flex; gap:10px; justify-content:center; margin-top:20px;">
+            {% if page > 1 %}
+            <a class="btn secondary" href="/jobs?work_mode={{ work_mode }}&min_salary={{ min_salary or '' }}&sponsorship_only={{ 'true' if sponsorship_only else '' }}&sort={{ sort }}&page={{ page - 1 }}">&larr; Previous</a>
+            {% endif %}
+            {% if has_more %}
+            <a class="btn secondary" href="/jobs?work_mode={{ work_mode }}&min_salary={{ min_salary or '' }}&sponsorship_only={{ 'true' if sponsorship_only else '' }}&sort={{ sort }}&page={{ page + 1 }}">Next &rarr;</a>
+            {% endif %}
+        </div>
+        {% endif %}
     {% else %}
         <p class="empty">
             {% if mode == 'recommended' %}

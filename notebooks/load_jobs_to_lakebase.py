@@ -3,7 +3,7 @@ Delta -> Lakebase loader.
 
 Second step of the batch pipeline. Reads postings from the Delta raw landing
 zone and upserts them into Lakebase's operational tables. Embedding is a
-separate step (ingest_job_embeddings.py).
+separate step (ingest_jobs_embeddings.py).
 
 Why this is separate from the Spark job:
   - Delta stays the source of truth for raw ingested data. If this step fails,
@@ -74,7 +74,7 @@ def _run(run, only_new=True):
 
     if not postings:
         print("\nNothing new to load.")
-        print("Next: run ingest_job_embeddings.py")
+        print("Next: run ingest_jobs_embeddings.py")
         return
 
     written = lakebase.upsert_job_postings(postings)
@@ -82,7 +82,7 @@ def _run(run, only_new=True):
 
     print("\n" + "=" * 70)
     print(f"Done. Upserted {written} postings into Lakebase.")
-    print("Next: run ingest_job_embeddings.py")
+    print("Next: run ingest_jobs_embeddings.py")
     print("=" * 70)
 
 

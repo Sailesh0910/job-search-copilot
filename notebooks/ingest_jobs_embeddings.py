@@ -110,7 +110,7 @@ def _run(run):
 
 def main(**kwargs):
     """Runs the job, recording start/finish/failure in job_copilot.pipeline_runs."""
-    with lakebase.track_run("ingest_job_embeddings") as run:
+    with lakebase.track_run("ingest_jobs_embeddings") as run:
         _run(run, **kwargs)
 
 

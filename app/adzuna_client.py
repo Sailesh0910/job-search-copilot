@@ -14,11 +14,14 @@ in the URL path, e.g. /search/1, /search/2.
 """
 
 import hashlib
+import logging
 import time
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 import requests
+
+logger = logging.getLogger(__name__)
 
 
 class AdzunaClient:
@@ -53,18 +56,15 @@ class AdzunaClient:
             **params,
         }
 
-        last_error = None
         for attempt in range(max_retries):
             try:
                 response = self.session.get(url, params=request_params, timeout=10)
                 response.raise_for_status()
                 return response.json()
-            except requests.exceptions.RequestException as e:
-                last_error = e
+            except requests.exceptions.RequestException:
                 if attempt == max_retries - 1:
                     raise
                 time.sleep(2 ** attempt)
-        raise last_error
 
     # ------------------------------------------------------------------
     # Normalize a single raw Adzuna result into our job_postings shape.
@@ -74,11 +74,15 @@ class AdzunaClient:
     # ------------------------------------------------------------------
 
     def _normalize_posting(self, raw: Dict) -> Dict:
+        title = raw.get("title", "")
+        company = raw.get("company", {}).get("display_name", "")
+        location = raw.get("location", {}).get("display_name", "")
+
         posting_id = raw.get("id")
         if not posting_id:
             # Fallback dedup key if Adzuna ever omits an id: hash the title
             # + company + location, so the same posting won't be inserted twice.
-            fallback = f"{raw.get('title', '')}-{raw.get('company', {}).get('display_name', '')}"
+            fallback = f"{title}-{company}-{location}"
             posting_id = f"ADZUNA-{hashlib.md5(fallback.encode()).hexdigest()}"
 
         created = raw.get("created")
@@ -90,16 +94,26 @@ class AdzunaClient:
 
         return {
             "id": str(posting_id),
-            "title": raw.get("title", "Untitled posting"),
-            "company": raw.get("company", {}).get("display_name", "Unknown"),
-            "location": raw.get("location", {}).get("display_name", "Unknown"),
+            "title": title or "Untitled posting",
+            "company": company or "Unknown",
+            "location": location or "Unknown",
             "description": raw.get("description", ""),
-            "salary_min": raw.get("salary_min"),
-            "salary_max": raw.get("salary_max"),
+            # Adzuna returns salary as a float (e.g. 90000.0); the Spark
+            # ingestion schema declares these columns IntegerType, so a raw
+            # float here would fail createDataFrame's type check.
+            "salary_min": self._to_int(raw.get("salary_min")),
+            "salary_max": self._to_int(raw.get("salary_max")),
             "url": raw.get("redirect_url"),
             "posted_at": posted_at,
             "synced_at": datetime.now(timezone.utc),
         }
+
+    @staticmethod
+    def _to_int(value) -> Optional[int]:
+        """Coerces Adzuna's salary float (or None) to an int, rounding rather
+        than truncating so a value like 89999.6 doesn't undercount by a
+        dollar."""
+        return round(value) if value is not None else None
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -159,7 +173,7 @@ class AdzunaClient:
             try:
                 data = self._make_request(page, params)
             except requests.exceptions.RequestException as e:
-                print(f"⚠️  Adzuna request failed on page {page}: {e}")
+                logger.warning("Adzuna request failed on page %d: %s", page, e)
                 break
 
             results = data.get("results", [])

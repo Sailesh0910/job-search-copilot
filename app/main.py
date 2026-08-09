@@ -12,8 +12,11 @@ keeps the same business logic usable from both a human clicking buttons and
 an agent calling tools.
 """
 
+import logging
 import os
 from contextlib import asynccontextmanager
+from typing import Literal, Optional
+from urllib.parse import quote
 
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import RedirectResponse
@@ -24,9 +27,16 @@ import embeddings
 import job_broker
 from mcp_tools import mcp
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger(__name__)
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-mcp_app = mcp.http_app(path="/mcp")
+# path="/" so the MCP endpoint lives at its own root within the sub-app;
+# app.mount("/mcp", ...) below then supplies the "/mcp" prefix. Passing
+# path="/mcp" here as well (the previous config) made the effective URL
+# "/mcp/mcp" — the mount prefix and the sub-app's internal path stacked.
+mcp_app = mcp.http_app(path="/")
 
 
 @asynccontextmanager
@@ -34,7 +44,8 @@ async def lifespan(app: FastAPI):
     """
     Runs once at startup: creates the schema if needed and warms the
     embedding model so the first real request isn't the one paying the
-    multi-second model-load cost.
+    multi-second model-load cost. Releases pooled database connections on
+    shutdown.
 
     Also enters the MCP server's own lifespan — FastMCP's session manager
     needs this wired into the parent app's lifespan, not just mounted as
@@ -44,6 +55,7 @@ async def lifespan(app: FastAPI):
     embeddings.get_model()
     async with mcp_app.lifespan(app):
         yield
+    job_broker.close_db_pool()
 
 
 app = FastAPI(title="Job Hunting Copilot", lifespan=lifespan)
@@ -51,7 +63,53 @@ app.mount("/mcp", mcp_app)
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
-STATUSES = ["saved", "applied", "interviewing", "rejected", "offer"]
+STATUS = Literal["saved", "applied", "interviewing", "rejected", "offer"]
+STATUSES = list(STATUS.__args__)
+
+JOBS_PAGE_SIZE = 25
+
+
+def _parse_optional_int(raw: Optional[str]) -> Optional[int]:
+    """
+    Parses an optional numeric form/query field, treating a blank or
+    non-numeric value as "not provided" rather than raising — the previous
+    plain int(raw) crashed the whole request (500) on the ordinary case of a
+    user leaving an optional number field empty or typing something
+    non-numeric into it.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+@app.exception_handler(job_broker.LakebaseError)
+async def lakebase_error_handler(request: Request, exc: job_broker.LakebaseError):
+    """
+    Safety net for routes that don't already handle LakebaseError themselves
+    (currently just /jobs, which shows the error inline alongside the search
+    filters). The raw exception text isn't shown to the browser — it can
+    carry connection details from the underlying psycopg2 error — it's
+    logged server-side instead.
+    """
+    logger.error("Unhandled LakebaseError on %s %s", request.method, request.url.path, exc_info=exc)
+    return templates.TemplateResponse(
+        request, "error.html",
+        {"message": "Something went wrong talking to the database. Please try again in a moment."},
+        status_code=503,
+    )
+
+
+# ----------------------------------------------------------------------------
+# Health
+# ----------------------------------------------------------------------------
+
+@app.get("/healthz")
+def healthz():
+    return {"status": "ok"}
 
 
 # ----------------------------------------------------------------------------
@@ -62,8 +120,8 @@ STATUSES = ["saved", "applied", "interviewing", "rejected", "offer"]
 def dashboard(request: Request):
     stats = job_broker.get_pipeline_stats()
     recent_runs = job_broker.get_recent_runs(limit=5)
-    return templates.TemplateResponse("dashboard.html", {
-        "request": request, "stats": stats, "recent_runs": recent_runs,
+    return templates.TemplateResponse(request, "dashboard.html", {
+        "stats": stats, "recent_runs": recent_runs,
     })
 
 
@@ -74,7 +132,7 @@ def dashboard(request: Request):
 @app.get("/profile")
 def profile_form(request: Request):
     profile = job_broker.get_profile() or {}
-    return templates.TemplateResponse("profile.html", {"request": request, "profile": profile})
+    return templates.TemplateResponse(request, "profile.html", {"profile": profile})
 
 
 @app.post("/profile")
@@ -83,7 +141,7 @@ def profile_save(
     target_roles: str = Form(""),
     years_experience: str = Form(""),
     location_preference: str = Form("any"),
-    remote_preference: str = Form("any"),
+    remote_preference: Literal["any", "remote", "hybrid", "onsite"] = Form("any"),
     min_salary: str = Form(""),
     sponsorship_required: bool = Form(False),
     work_authorization: str = Form(""),
@@ -95,10 +153,10 @@ def profile_save(
     job_broker.save_profile({
         "full_name": full_name or None,
         "target_roles": target_roles or None,
-        "years_experience": int(years_experience) if years_experience.strip() else None,
+        "years_experience": _parse_optional_int(years_experience),
         "location_preference": location_preference or "any",
         "remote_preference": remote_preference or "any",
-        "min_salary": int(min_salary) if min_salary.strip() else None,
+        "min_salary": _parse_optional_int(min_salary),
         "sponsorship_required": sponsorship_required,
         "work_authorization": work_authorization or None,
         "tech_stack_musthaves": tech_stack_musthaves or None,
@@ -118,55 +176,73 @@ def jobs_list(
     request: Request,
     q: str = "",
     min_salary: str = "",
-    work_mode: str = "any",
+    work_mode: Literal["any", "remote", "hybrid", "onsite"] = "any",
     sponsorship_only: bool = False,
-    sort: str = "newest",
+    sort: Literal["newest", "oldest"] = "newest",
+    page: int = 1,
+    fetch_error: bool = False,
 ):
     """
     Two modes on one page: a typed query runs semantic search; no query
     falls back to plain structured browsing with the filter controls.
+
+    Pagination only applies to browse mode — semantic search already returns
+    a fixed, relevance-ranked top_k list, so "page 2 of a search" isn't a
+    meaningful concept here the way "page 2 of newest postings" is.
     """
     error = None
+    if fetch_error:
+        error = ("Couldn't fetch new postings from Adzuna. Check that ADZUNA_APP_ID "
+                  "and ADZUNA_APP_KEY are configured correctly, then try again.")
+
+    page = max(1, page)
+    has_more = False
     try:
         if q.strip():
             jobs = job_broker.search_jobs(q.strip(), top_k=30)
         else:
-            jobs = job_broker.browse_jobs(
-                min_salary=int(min_salary) if min_salary.strip() else None,
+            jobs, has_more = job_broker.browse_jobs(
+                min_salary=_parse_optional_int(min_salary),
                 work_mode=work_mode, sponsorship_only=sponsorship_only, sort_by=sort,
+                limit=JOBS_PAGE_SIZE, offset=(page - 1) * JOBS_PAGE_SIZE,
             )
     except job_broker.LakebaseError as e:
-        jobs, error = [], str(e)
+        logger.error("Lakebase error on /jobs: %s", e)
+        jobs = []
+        error = error or "Couldn't load jobs right now — the database isn't reachable. Try again shortly."
 
-    return templates.TemplateResponse("jobs.html", {
-        "request": request, "jobs": jobs, "q": q, "min_salary": min_salary,
+    return templates.TemplateResponse(request, "jobs.html", {
+        "jobs": jobs, "q": q, "min_salary": min_salary,
         "work_mode": work_mode, "sponsorship_only": sponsorship_only,
         "sort": sort, "error": error, "mode": "browse",
+        "page": page, "has_more": has_more,
     })
 
 
 @app.get("/recommended")
 def recommended(request: Request):
     jobs = job_broker.get_recommended_jobs(top_k=30)
-    return templates.TemplateResponse("jobs.html", {
-        "request": request, "jobs": jobs, "q": "", "min_salary": "",
+    return templates.TemplateResponse(request, "jobs.html", {
+        "jobs": jobs, "q": "", "min_salary": "",
         "work_mode": "any", "sponsorship_only": False, "sort": "newest",
-        "error": None, "mode": "recommended",
+        "error": None, "mode": "recommended", "page": 1, "has_more": False,
     })
 
 
 @app.post("/jobs/fetch")
 def jobs_fetch(what: str = Form(...), where: str = Form("")):
     """Live on-demand fetch from Adzuna — the ad-hoc counterpart to the Spark batch job."""
+    what = what.strip()
     try:
-        job_broker.fetch_new_postings(what.strip(), where=where.strip() or None)
-    except Exception:
-        pass  # keep the UI moving; the redirect target just shows whatever was found
-    return RedirectResponse(f"/jobs?q={what}", status_code=303)
+        job_broker.fetch_new_postings(what, where=where.strip() or None)
+    except Exception as e:
+        logger.error("Adzuna fetch failed for %r: %s", what, e)
+        return RedirectResponse(f"/jobs?q={quote(what)}&fetch_error=1", status_code=303)
+    return RedirectResponse(f"/jobs?q={quote(what)}", status_code=303)
 
 
 @app.post("/jobs/{job_posting_id}/save")
-def job_save(job_posting_id: str, status: str = Form("saved")):
+def job_save(job_posting_id: str, status: STATUS = Form("saved")):
     job_broker.save_to_pipeline(job_posting_id, status=status)
     return RedirectResponse("/pipeline", status_code=303)
 
@@ -176,18 +252,43 @@ def job_save(job_posting_id: str, status: str = Form("saved")):
 # ----------------------------------------------------------------------------
 
 @app.get("/pipeline")
-def pipeline_board(request: Request, status: str = ""):
+def pipeline_board(request: Request, status: str = "", cover_letter_error: bool = False):
     applications = job_broker.get_pipeline(status=status or None)
     stale = job_broker.get_stale_applications()
-    return templates.TemplateResponse("pipeline.html", {
-        "request": request, "applications": applications, "stale": stale,
-        "statuses": STATUSES, "current_status": status,
+    error = (
+        "Couldn't draft a cover letter right now. Check that your profile is "
+        "saved and the serving endpoint is available, then try again."
+        if cover_letter_error else None
+    )
+    return templates.TemplateResponse(request, "pipeline.html", {
+        "applications": applications, "stale": stale,
+        "statuses": STATUSES, "current_status": status, "error": error,
     })
 
 
 @app.post("/pipeline/{job_posting_id}/status")
-def pipeline_update_status(job_posting_id: str, new_status: str = Form(...)):
+def pipeline_update_status(job_posting_id: str, new_status: STATUS = Form(...)):
     job_broker.update_status(job_posting_id, new_status)
+    return RedirectResponse("/pipeline", status_code=303)
+
+
+@app.post("/pipeline/{job_posting_id}/cover-letter")
+def pipeline_draft_cover_letter(job_posting_id: str):
+    """Drafts (or redrafts) a cover letter for a tracked posting from the
+    web UI — the same job_broker.draft_cover_letter the MCP tool uses, so
+    the agent and a human clicking buttons get identical behavior."""
+    try:
+        job_broker.draft_cover_letter(job_posting_id)
+    except (ValueError, RuntimeError) as e:
+        logger.error("Cover letter drafting failed for %s: %s", job_posting_id, e)
+        return RedirectResponse("/pipeline?cover_letter_error=1", status_code=303)
+    return RedirectResponse("/pipeline", status_code=303)
+
+
+@app.post("/pipeline/{job_posting_id}/remove")
+def pipeline_remove(job_posting_id: str):
+    """Removes a posting from the pipeline entirely — not a status change."""
+    job_broker.remove_from_pipeline(job_posting_id)
     return RedirectResponse("/pipeline", status_code=303)
 
 

@@ -6,25 +6,44 @@ in via app.yaml's valueFrom pointing at a Databricks secret. No dbutils —
 deployed apps run outside a notebook context, so os.environ is the only
 thing that works in both the app and the batch scripts.
 
+Connections come from a small pooled ThreadedConnectionPool rather than one
+psycopg2.connect() per call — opening a fresh TCP+TLS connection for every
+query is real, avoidable latency. The pool is small (1-5 connections) since
+this is a single-user app on shared, free-tier compute — concurrency here is
+inherently low, so a large pool would just hold idle connections against
+whatever cap the Lakebase instance has.
+
 Error handling: every write goes through transaction(), which commits on
 success and rolls back on any failure. Failures are re-raised as LakebaseError
 so callers never see raw psycopg2 tracebacks.
 """
 
+import logging
 import os
+import threading
 from contextlib import contextmanager
 
 import psycopg2
+from psycopg2 import pool as psycopg2_pool
 from psycopg2.extras import RealDictCursor, execute_values
 
-EMBEDDING_DIM = 768
-MODEL_NAME = "sentence-transformers/all-mpnet-base-v2"
+from config import EMBEDDING_DIM, EMBEDDING_MODEL_NAME
+
+logger = logging.getLogger(__name__)
+
+MODEL_NAME = EMBEDDING_MODEL_NAME
 
 # schema.sql lives next to this file. Resolving via __file__ rather than a
 # relative path from the caller's working directory means this works whether
 # lakebase.py is imported from a deployed app or from a notebook — wherever
 # this file physically is, schema.sql is right beside it.
 _SCHEMA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "schema.sql")
+
+_POOL_MIN_CONN = 1
+_POOL_MAX_CONN = 5
+
+_pool = None
+_pool_lock = threading.Lock()
 
 
 class LakebaseError(Exception):
@@ -48,18 +67,80 @@ def _connection_string() -> str:
     return conn_string
 
 
+def _get_pool() -> psycopg2_pool.ThreadedConnectionPool:
+    """
+    Lazily creates the connection pool on first use (double-checked locking,
+    since FastAPI can call this from multiple request threads). Lazy rather
+    than created at import time so importing lakebase.py doesn't require
+    JOB_COPILOT_CONNECTION_STRING to already be set — e.g. a notebook that
+    only calls track_run() shouldn't need it.
+    """
+    global _pool
+    if _pool is None:
+        with _pool_lock:
+            if _pool is None:
+                try:
+                    _pool = psycopg2_pool.ThreadedConnectionPool(
+                        _POOL_MIN_CONN, _POOL_MAX_CONN,
+                        _connection_string(), cursor_factory=RealDictCursor,
+                    )
+                except psycopg2.Error as e:
+                    raise LakebaseError(f"Could not connect to Lakebase: {e}") from e
+    return _pool
+
+
+def close_pool() -> None:
+    """Closes all pooled connections. Call on app shutdown; safe to call even
+    if the pool was never created."""
+    global _pool
+    if _pool is not None:
+        _pool.closeall()
+        _pool = None
+
+
+def _checkout_healthy_connection(pool):
+    """
+    Gets a connection from the pool, validating it with a cheap round trip
+    before handing it back. A connection sitting idle in the pool can go
+    stale server-side (idle timeout, network blip, an expired credential) —
+    a real risk for a low-traffic app that may sit idle between requests for
+    a while. Catching that here means one retry gets a fresh connection
+    instead of the caller's actual query failing with a confusing error.
+    """
+    for attempt in range(2):
+        conn = pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1;")
+            return conn
+        except psycopg2.Error:
+            pool.putconn(conn, close=True)
+            if attempt == 1:
+                raise
+
+
 @contextmanager
 def get_connection():
-    """Yields a psycopg2 connection with dict-style rows; always closes it."""
+    """Yields a pooled connection with dict-style rows; always returns it to
+    the pool. A connection an OperationalError passed through is discarded
+    instead of reused, since the connection itself is what's suspect —
+    ordinary query errors (bad data, a constraint violation) don't indicate a
+    broken connection and leave it safe to reuse after the caller's own
+    rollback."""
+    pool = _get_pool()
     try:
-        conn = psycopg2.connect(_connection_string(), cursor_factory=RealDictCursor)
+        conn = _checkout_healthy_connection(pool)
     except psycopg2.Error as e:
         raise LakebaseError(f"Could not connect to Lakebase: {e}") from e
 
+    discard = False
     try:
         yield conn
+    except psycopg2.OperationalError:
+        discard = True
+        raise
     finally:
-        conn.close()
+        pool.putconn(conn, close=discard)
 
 
 @contextmanager
@@ -77,11 +158,11 @@ def read_cursor():
 def transaction():
     """
     Yields a cursor inside a transaction. Commits on success, rolls back on any
-    exception, always closes the connection.
+    exception, always returns the connection to the pool.
 
     Every write goes through this rather than hand-rolled commit calls, so a
     failure partway through can't leave a transaction dangling on a connection
-    that then gets closed — which silently discards the work and can leave the
+    that then gets reused — which silently discards the work and can leave the
     database holding locks.
     """
     with get_connection() as conn:
@@ -168,7 +249,7 @@ def upsert_job_embeddings(rows):
         for (pid, idx, text, emb) in rows
     ]
 
-    sql = """
+    sql = f"""
         INSERT INTO job_copilot.job_embeddings
             (job_posting_id, chunk_index, chunk_text, embedding, model_name)
         VALUES %s
@@ -179,7 +260,7 @@ def upsert_job_embeddings(rows):
     """
 
     with transaction() as cur:
-        execute_values(cur, sql, formatted, template="(%s, %s, %s, %s::vector(768), %s)")
+        execute_values(cur, sql, formatted, template=f"(%s, %s, %s, %s::vector({EMBEDDING_DIM}), %s)")
     return len(formatted)
 
 
@@ -202,7 +283,7 @@ def save_profile(profile, embedding=None):
 
     with transaction() as cur:
         if existing:
-            cur.execute("""
+            cur.execute(f"""
                 UPDATE job_copilot.profile SET
                     full_name = %s, target_roles = %s, years_experience = %s,
                     location_preference = %s, remote_preference = %s,
@@ -210,7 +291,7 @@ def save_profile(profile, embedding=None):
                     work_authorization = %s, tech_stack_musthaves = %s,
                     company_size_pref = %s, other_notes = %s,
                     resume_text = %s,
-                    resume_embedding = COALESCE(%s::vector(768), resume_embedding),
+                    resume_embedding = COALESCE(%s::vector({EMBEDDING_DIM}), resume_embedding),
                     updated_at = NOW()
                 WHERE id = %s;
             """, (
@@ -223,13 +304,13 @@ def save_profile(profile, embedding=None):
                 embedding_str, existing["id"],
             ))
         else:
-            cur.execute("""
+            cur.execute(f"""
                 INSERT INTO job_copilot.profile
                     (full_name, target_roles, years_experience, location_preference,
                      remote_preference, min_salary, sponsorship_required,
                      work_authorization, tech_stack_musthaves, company_size_pref,
                      other_notes, resume_text, resume_embedding)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector(768));
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector({EMBEDDING_DIM}));
             """, (
                 profile.get("full_name"), profile.get("target_roles"),
                 profile.get("years_experience"), profile.get("location_preference", "any"),
@@ -244,29 +325,44 @@ def save_profile(profile, embedding=None):
 # Search
 # ----------------------------------------------------------------------------
 
-def search_jobs_semantic(query_embedding, top_k=10, apply_profile_filters=True):
+def search_jobs_semantic(query_embedding, top_k=10, apply_profile_filters=True, profile=None):
     """
     Semantic search over job postings, with the profile's hard filters applied
     first and cosine similarity ranking on top.
+
+    profile: pass an already-fetched profile dict to skip re-querying it —
+    rank_jobs_for_profile() already has one in hand from computing the query
+    vector, so it passes it through rather than this function fetching the
+    same row a second time. Callers that don't already have one (e.g. a plain
+    text search) can omit it and it's fetched here as before.
 
     Sponsorship logic worth noting: when sponsorship is required we exclude only
     postings that EXPLICITLY say they don't sponsor. 'not_mentioned' is silence,
     not a no, and most postings never mention it either way — filtering those out
     would discard the majority of viable roles.
 
-    DISTINCT ON collapses multiple matching chunks of the same posting into one
-    row, keeping its best-matching chunk. Postgres requires ORDER BY p.id first
-    for that, which isn't the display order we want, so results are re-sorted by
-    similarity in Python afterwards.
+    Ranking approach: this ranks individual CHUNKS with an index-friendly
+    `ORDER BY embedding <=> vector LIMIT`, then keeps the best chunk per
+    posting in Python, in similarity order, until top_k distinct postings are
+    collected. The alternative — DISTINCT ON (p.id) to collapse chunks per
+    posting before ranking — forces Postgres to sort by posting id first and
+    similarity second, which both breaks top-k ranking (you'd get the top_k
+    postings with the lowest ids, not the best matches) and makes the HNSW
+    vector index unusable, since it can only be used when the vector-distance
+    ORDER BY leads the query. fetch_limit over-fetches (5x top_k, capped) so
+    postings with several high-ranking chunks don't crowd out other postings
+    — a small, bounded cost for correctness.
     """
     top_k = max(1, min(top_k, 50))
+    fetch_limit = min(top_k * 5, 250)
     vector_str = "[" + ",".join(map(str, query_embedding)) + "]"
 
     where_clauses = []
     params = [vector_str]
 
     if apply_profile_filters:
-        profile = get_profile()
+        if profile is None:
+            profile = get_profile()
         if profile:
             if profile.get("min_salary"):
                 where_clauses.append("(p.salary_max IS NULL OR p.salary_max >= %s)")
@@ -286,27 +382,38 @@ def search_jobs_semantic(query_embedding, top_k=10, apply_profile_filters=True):
                 where_clauses.append("p.sponsorship_signal != 'no_sponsorship_stated'")
 
     where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
-    params.extend([vector_str, top_k])
+    params.extend([vector_str, fetch_limit])
 
     sql = f"""
-        SELECT DISTINCT ON (p.id)
-               p.id, p.title, p.company, p.location, p.description,
+        SELECT p.id, p.title, p.company, p.location, p.description,
                p.salary_min, p.salary_max, p.url,
                p.sponsorship_signal, p.work_mode_signal, p.posted_at,
                e.chunk_text,
-               1 - (e.embedding <=> %s::vector(768)) AS similarity
+               1 - (e.embedding <=> %s::vector({EMBEDDING_DIM})) AS similarity
         FROM job_copilot.job_embeddings e
         JOIN job_copilot.job_postings p ON p.id = e.job_posting_id
         {where_sql}
-        ORDER BY p.id, e.embedding <=> %s::vector(768)
+        ORDER BY e.embedding <=> %s::vector({EMBEDDING_DIM})
         LIMIT %s;
     """
 
     with read_cursor() as cur:
         cur.execute(sql, params)
-        results = [dict(r) for r in cur.fetchall()]
+        rows = [dict(r) for r in cur.fetchall()]
 
-    return sorted(results, key=lambda r: r["similarity"], reverse=True)
+    # Rows are already best-to-worst (chunk-level) since the query orders by
+    # vector distance directly. Keep the first (best) occurrence per posting.
+    seen_postings = set()
+    results = []
+    for row in rows:
+        if row["id"] in seen_postings:
+            continue
+        seen_postings.add(row["id"])
+        results.append(row)
+        if len(results) >= top_k:
+            break
+
+    return results
 
 
 def rank_jobs_for_profile(top_k=20):
@@ -329,18 +436,25 @@ def rank_jobs_for_profile(top_k=20):
         if isinstance(raw, str) else list(raw)
     )
 
-    return search_jobs_semantic(embedding, top_k=top_k, apply_profile_filters=True)
+    return search_jobs_semantic(embedding, top_k=top_k, apply_profile_filters=True, profile=profile)
 
 
 def browse_jobs(min_salary=None, work_mode=None, sponsorship_only=False,
-                sort_by="newest", limit=50):
+                sort_by="newest", limit=50, offset=0):
     """
     Plain structured browsing — no embedding model needed, so this stays fast
     even on a cold start.
 
+    Returns (postings, has_more). has_more is derived by fetching one extra
+    row past `limit` rather than a separate COUNT(*) query, which would be a
+    second full scan of whatever the filters matched just to size a "next
+    page" link.
+
     sort_by: 'newest' (default) or 'oldest'. For match-based ranking use
              rank_jobs_for_profile() instead.
     """
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
     where_clauses = []
     params = []
 
@@ -358,16 +472,19 @@ def browse_jobs(min_salary=None, work_mode=None, sponsorship_only=False,
         "ORDER BY posted_at ASC NULLS LAST" if sort_by == "oldest"
         else "ORDER BY posted_at DESC NULLS LAST"
     )
-    params.append(limit)
+    params.extend([limit + 1, offset])
 
     with read_cursor() as cur:
         cur.execute(f"""
             SELECT * FROM job_copilot.job_postings
             {where_sql}
             {order_sql}
-            LIMIT %s;
+            LIMIT %s OFFSET %s;
         """, params)
-        return [dict(r) for r in cur.fetchall()]
+        rows = [dict(r) for r in cur.fetchall()]
+
+    has_more = len(rows) > limit
+    return rows[:limit], has_more
 
 
 def get_job_posting(job_posting_id):
@@ -448,24 +565,51 @@ def update_application_status(job_posting_id, new_status):
     return dict(row) if row else None
 
 
-def get_pipeline(status=None):
-    """Returns applications joined to their postings, optionally filtered by stage."""
+def get_pipeline(status=None, stale_posting_days=30):
+    """
+    Returns applications joined to their postings, optionally filtered by
+    stage. Each row includes posting_possibly_stale — a lightweight
+    heuristic ("this listing was posted a long time ago") rather than a live
+    recheck of whether the posting is still up. This app never re-fetches
+    external URLs to verify a listing is still active; it's a hint to check
+    manually before assuming a saved posting is still open, not a fact.
+    """
     where_sql = "WHERE a.status = %s" if status else ""
-    params = [status] if status else []
+    params = [stale_posting_days]
+    if status:
+        params.append(status)
 
     with read_cursor() as cur:
         cur.execute(f"""
             SELECT a.id AS application_id, a.status, a.status_updated_at,
                    a.applied_at, a.cover_letter_draft,
                    p.id AS job_posting_id, p.title, p.company, p.location,
-                   p.url, p.salary_min, p.salary_max,
-                   p.sponsorship_signal, p.work_mode_signal
+                   p.url, p.salary_min, p.salary_max, p.posted_at,
+                   p.sponsorship_signal, p.work_mode_signal,
+                   (p.posted_at IS NOT NULL
+                    AND p.posted_at < NOW() - (%s || ' days')::INTERVAL) AS posting_possibly_stale
             FROM job_copilot.applications a
             JOIN job_copilot.job_postings p ON p.id = a.job_posting_id
             {where_sql}
             ORDER BY a.status_updated_at DESC;
         """, params)
         return [dict(r) for r in cur.fetchall()]
+
+
+def delete_application(job_posting_id):
+    """
+    Removes a posting from the pipeline entirely — not a status change. Its
+    interview_notes cascade-delete via the FK (ON DELETE CASCADE in
+    schema.sql). The underlying job_postings/job_embeddings rows are left
+    alone — those are the shared catalog, not pipeline-tracking data.
+    """
+    with transaction() as cur:
+        cur.execute(
+            "DELETE FROM job_copilot.applications WHERE job_posting_id = %s RETURNING id;",
+            (job_posting_id,),
+        )
+        row = cur.fetchone()
+    return dict(row) if row else None
 
 
 def get_stale_applications(days=14):

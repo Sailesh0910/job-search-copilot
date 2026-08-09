@@ -4,6 +4,10 @@
     <h1>Pipeline</h1>
     <p class="subtitle">Everything you've saved or applied to.</p>
 
+    {% if error %}
+    <div class="callout error">{{ error }}</div>
+    {% endif %}
+
     {% if stale %}
     <div class="callout">
         <strong>{{ stale|length }} application{{ 's' if stale|length != 1 }} need follow-up</strong> — no status change in 14+ days:
@@ -21,7 +25,9 @@
     {% if applications %}
         {% for app in applications %}
         <div class="job">
-            <h3>{{ app.title }}</h3>
+            <h3>{{ app.title }}
+                {% if app.posting_possibly_stale %}<span class="badge sponsor-no" title="Posted over 30 days ago — worth confirming the listing is still open before relying on it">Possibly stale</span>{% endif %}
+            </h3>
             <div class="meta">{{ app.company or "Unknown company" }} · {{ app.location or "" }}
                 {% if app.salary_min or app.salary_max %} · ${{ "{:,}".format(app.salary_min) if app.salary_min else "?" }}-${{ "{:,}".format(app.salary_max) if app.salary_max else "?" }}{% endif %}
             </div>
@@ -37,6 +43,16 @@
                 <button type="submit" class="secondary">Update status</button>
                 {% if app.url %}<a class="btn secondary" href="{{ app.url }}" target="_blank" rel="noopener">View posting</a>{% endif %}
             </form>
+
+            <div class="inline-form" style="margin-top:8px;">
+                <form method="post" action="/pipeline/{{ app.job_posting_id }}/cover-letter">
+                    <button type="submit" class="secondary">{{ 'Redraft cover letter' if app.cover_letter_draft else 'Draft cover letter' }}</button>
+                </form>
+                <form method="post" action="/pipeline/{{ app.job_posting_id }}/remove"
+                      onsubmit="return confirm('Remove this from your pipeline? This cannot be undone.');">
+                    <button type="submit" class="secondary">Remove</button>
+                </form>
+            </div>
 
             {% if app.cover_letter_draft %}
             <details>

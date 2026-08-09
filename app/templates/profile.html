@@ -25,11 +25,11 @@
         <div class="field-row">
             <div class="field">
                 <label for="years_experience">Years of experience</label>
-                <input type="number" id="years_experience" name="years_experience" min="0" value="{{ profile.get('years_experience', '') }}">
+                <input type="number" id="years_experience" name="years_experience" min="0" value="{{ profile.get('years_experience') or '' }}">
             </div>
             <div class="field">
                 <label for="min_salary">Minimum salary</label>
-                <input type="number" id="min_salary" name="min_salary" min="0" step="1000" value="{{ profile.get('min_salary', '') }}">
+                <input type="number" id="min_salary" name="min_salary" min="0" step="1000" value="{{ profile.get('min_salary') or '' }}">
             </div>
         </div>
 

@@ -1,0 +1,13 @@
+name: job-hunting-copilot
+
+command:
+  - python
+  - main.py
+
+env:
+  - name: JOB_COPILOT_CONNECTION_STRING
+    valueFrom: JOB_COPILOT_CONNECTION_STRING
+  - name: ADZUNA_APP_ID
+    valueFrom: ADZUNA_APP_ID
+  - name: ADZUNA_APP_KEY
+    valueFrom: ADZUNA_APP_KEY

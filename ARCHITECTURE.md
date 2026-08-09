@@ -11,7 +11,7 @@ flowchart TD
     B -->|classify sponsorship + work mode| C[(Delta: job_postings_raw)]
     C --> D[load_jobs_to_lakebase.py]
     D --> E[(Lakebase: job_postings)]
-    D --> F[ingest_job_embeddings.py]
+    D --> F[ingest_jobs_embeddings.py]
     F --> G[(Lakebase: job_embeddings)]
 
     A -->|single on-demand search| H[job_broker.fetch_new_postings]
@@ -172,4 +172,32 @@ is a separate project, not a schema change.
 any failure, wrapping errors as `LakebaseError` so callers never see raw
 `psycopg2` tracebacks. `main.py` and the notebooks contain zero direct
 database calls — `psycopg2` is imported nowhere but `lakebase.py`, checked
-with a plain grep, not just a convention.
+with a plain grep and enforced by `tests/test_architecture_invariants.py`,
+not just a convention. `main.py` also registers a FastAPI exception handler
+for `LakebaseError` as a safety net for routes that don't handle it
+themselves, so a database hiccup renders a friendly error page instead of a
+500 with a raw traceback — and never echoes the underlying exception text
+into the response, since psycopg2's own error strings can carry connection
+details.
+
+**Connection pooling.** `lakebase.py` keeps a small `ThreadedConnectionPool`
+(1-5 connections) rather than opening a fresh `psycopg2.connect()` per call —
+deliberately small, since this is a single-user app on shared, free-tier
+compute where concurrency is inherently low. A connection is validated with
+a cheap `SELECT 1` on checkout and discarded-and-retried once if it turns out
+stale (the server closed an idle connection, or a credential expired) —
+realistic for an app that may sit idle between requests for a while.
+Discarding is otherwise selective: only `psycopg2.OperationalError` (the
+connection itself is suspect) causes a connection to be dropped from the
+pool; an ordinary query error (a constraint violation, bad data) leaves it
+safe to reuse after the caller's own rollback.
+
+**Semantic search ranks chunks, not postings.** `search_jobs_semantic` orders
+by vector distance directly (`ORDER BY embedding <=> vector LIMIT`) and
+dedupes to one row per posting in Python afterward, keeping the best-scoring
+chunk. The alternative — collapsing to one row per posting with
+`DISTINCT ON (id)` before ranking — forces Postgres to sort by posting id
+first and similarity second, which both breaks top-k ranking (you'd get the
+postings with the lowest ids, not the best matches) and makes the HNSW
+vector index unusable, since it can only serve a query whose `ORDER BY`
+leads with the distance expression it was built on.
