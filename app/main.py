@@ -36,7 +36,13 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # app.mount("/mcp", ...) below then supplies the "/mcp" prefix. Passing
 # path="/mcp" here as well (the previous config) made the effective URL
 # "/mcp/mcp" — the mount prefix and the sub-app's internal path stacked.
-mcp_app = mcp.http_app(path="/")
+#
+# stateless_http=True: FastMCP's default session tracking is in-memory
+# per-process. A Databricks App may run multiple replicas or restart the
+# process between requests, either of which drops a session created on one
+# request before the next one arrives ("Session terminated"). Stateless
+# mode makes every request self-contained, no session continuity required.
+mcp_app = mcp.http_app(path="/", stateless_http=True)
 
 
 @asynccontextmanager
@@ -58,7 +64,7 @@ async def lifespan(app: FastAPI):
     job_broker.close_db_pool()
 
 
-app = FastAPI(title="Job Hunting Copilot", lifespan=lifespan, redirect_slashes=False)
+app = FastAPI(title="Job Hunting Copilot", lifespan=lifespan)
 app.mount("/mcp", mcp_app)
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
