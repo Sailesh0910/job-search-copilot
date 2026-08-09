@@ -274,6 +274,35 @@ def test_chat_with_agent_wraps_failure(monkeypatch):
         job_broker.chat_with_agent([{"role": "user", "content": "hi"}])
 
 
+def test_chat_with_agent_extracts_message_from_sse_error_frame(monkeypatch):
+    """Regression test for the real failure hit in production: the agent
+    endpoint replied 200 but as an SSE error frame (tool registration
+    failing against this app's own /mcp), not plain JSON."""
+    sse_body = (
+        'event: error\n'
+        'data: {"error_code": "INVALID_PARAMETER_VALUE", '
+        '"message": "Failed to register tools from Databricks App MCP '
+        'server \'mcp-job-hunting-copilot\': HTTP 401"}\n\n'
+        'data: [DONE]\n\n'
+    )
+
+    class _FakeSseResponse:
+        status_code = 200
+        text = sse_body
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            raise ValueError("Expecting value: line 1 column 1 (char 0)")
+
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient", _FakeWorkspaceClient)
+    monkeypatch.setattr(job_broker.requests, "post", lambda *a, **k: _FakeSseResponse())
+
+    with pytest.raises(RuntimeError, match="Failed to register tools.*HTTP 401"):
+        job_broker.chat_with_agent([{"role": "user", "content": "hi"}])
+
+
 def test_chat_with_agent_wraps_non_json_response_with_status_and_body(monkeypatch):
     """A 200 with an unparseable (often empty) body previously surfaced as
     a bare 'Expecting value' error with no way to tell what actually came

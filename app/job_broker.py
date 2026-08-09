@@ -4,6 +4,7 @@ Business logic shared by the web routes (main.py) and the agent's MCP tools
 directly — they call into here, and this is the one place that logic lives.
 """
 
+import json
 import os
 
 import requests
@@ -219,6 +220,26 @@ Description: {posting['description'][:1500]}
 # plain chat-completions model directly with no agent/tool loop involved.
 # ----------------------------------------------------------------------------
 
+def _extract_sse_error(raw_text: str):
+    """Pulls a human-readable message out of a server-sent-events error
+    frame, e.g. 'event: error\\ndata: {"message": "..."}\\n\\ndata: [DONE]\\n\\n'.
+    Returns None if no such frame is present."""
+    for line in raw_text.splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        payload = line[len("data:"):].strip()
+        if payload in ("", "[DONE]"):
+            continue
+        try:
+            parsed = json.loads(payload)
+        except ValueError:
+            continue
+        if isinstance(parsed, dict) and "message" in parsed:
+            return parsed["message"]
+    return None
+
+
 def chat_with_agent(messages: list) -> str:
     """
     Sends the full conversation so far (a list of {"role", "content"} dicts)
@@ -238,6 +259,7 @@ def chat_with_agent(messages: list) -> str:
             json={
                 "model": SUPERVISOR_AGENT_ENDPOINT,
                 "input": messages,
+                "stream": False,
             },
             timeout=120,
         )
@@ -252,10 +274,17 @@ def chat_with_agent(messages: list) -> str:
     try:
         data = response.json()
     except ValueError as e:
-        # response.json() only raises this on a body that isn't valid JSON
-        # (often empty) — surface the actual status/body, since that's the
-        # one piece of information needed to tell what's actually coming
-        # back, and a bare "Expecting value" message can't tell us that.
+        # response.json() only raises this on a body that isn't valid JSON.
+        # Despite stream: False, the endpoint may still reply as
+        # server-sent events (e.g. its error frames do) — pull a real
+        # message out of that shape if present, since a bare "Expecting
+        # value" error can't tell us what actually went wrong.
+        sse_error = _extract_sse_error(response.text)
+        if sse_error:
+            raise RuntimeError(
+                f"Agent endpoint '{SUPERVISOR_AGENT_ENDPOINT}' returned an "
+                f"error: {sse_error}"
+            ) from e
         raise RuntimeError(
             f"Agent endpoint '{SUPERVISOR_AGENT_ENDPOINT}' returned a "
             f"non-JSON response (status {response.status_code}): "
