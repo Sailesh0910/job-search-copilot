@@ -27,6 +27,29 @@ from pyspark.sql import SparkSession, Window, functions as F
 
 import lakebase
 
+SECRET_SCOPE = "job-copilot"
+
+
+def _load_secrets_into_env():
+    """
+    Populates the env vars this module's functions read directly
+    (LAKEBASE_CONNECTION_STRING, ADZUNA_APP_ID, ADZUNA_APP_KEY) from the same
+    secret scope setup_secrets.py creates. The deployed App gets these
+    automatically through app.yaml's valueFrom; a notebook session doesn't,
+    so this is the notebook-side equivalent. No-ops if dbutils isn't
+    available (e.g. running this file directly outside Databricks) or a
+    variable is already set.
+    """
+    try:
+        for key in ("LAKEBASE_CONNECTION_STRING", "ADZUNA_APP_ID", "ADZUNA_APP_KEY"):
+            if not os.environ.get(key):
+                os.environ[key] = dbutils.secrets.get(SECRET_SCOPE, key)
+    except NameError:
+        pass
+
+
+_load_secrets_into_env()
+
 DELTA_TABLE = "job_postings_raw"
 
 
