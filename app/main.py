@@ -58,7 +58,7 @@ async def lifespan(app: FastAPI):
     job_broker.close_db_pool()
 
 
-app = FastAPI(title="Job Hunting Copilot", lifespan=lifespan)
+app = FastAPI(title="Job Hunting Copilot", lifespan=lifespan, redirect_slashes=False)
 app.mount("/mcp", mcp_app)
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))

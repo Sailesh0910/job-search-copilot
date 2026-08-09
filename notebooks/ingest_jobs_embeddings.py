@@ -1,3 +1,4 @@
+%pip install sentence-transformers
 # Databricks notebook source
 """
 Embedding ingestion: Lakebase postings -> Lakebase vectors.

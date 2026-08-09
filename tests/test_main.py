@@ -31,6 +31,16 @@ def test_healthz(client):
     assert resp.json() == {"status": "ok"}
 
 
+def test_mcp_mount_does_not_redirect_bare_path(client):
+    """Regression test: FastAPI's default redirect_slashes=True made POST
+    /mcp (no trailing slash) 307-redirect to /mcp/ before ever reaching the
+    MCP handler. Agent Bricks' MCP client doesn't follow that, which broke
+    tool registration entirely. app is constructed with redirect_slashes=
+    False specifically so this never comes back."""
+    resp = client.post("/mcp", follow_redirects=False)
+    assert resp.status_code != 307
+
+
 def test_dashboard_loads(client, monkeypatch):
     monkeypatch.setattr(job_broker, "get_pipeline_stats", lambda: {"saved": 2, "applied": 1})
     monkeypatch.setattr(job_broker, "get_recent_runs", lambda limit: [])
