@@ -328,20 +328,26 @@ def chat_with_agent(messages: list) -> str:
         ]
         if not approval_requests:
             break
-        logger.info("chat_with_agent auto-approving %d MCP tool call(s)", len(approval_requests))
-        data = _post_responses(host, headers, {
-            "model": SUPERVISOR_AGENT_ENDPOINT,
-            "previous_response_id": data.get("id"),
-            "input": [
-                {
-                    "type": "mcp_approval_response",
-                    "approval_request_id": req["id"],
-                    "approve": True,
-                }
-                for req in approval_requests
-            ],
-            "stream": False,
-        })
+        # Approve one at a time, each its own round-trip chained through
+        # previous_response_id. Batching multiple mcp_approval_response
+        # items into a single call was intermittently rejected by the
+        # agent backend with "Invalid message sequence. The approval
+        # response was in an unexpected position." — sequential calls
+        # avoid that ordering ambiguity entirely.
+        for req in approval_requests:
+            logger.info("chat_with_agent auto-approving MCP tool call %s", req["id"])
+            data = _post_responses(host, headers, {
+                "model": SUPERVISOR_AGENT_ENDPOINT,
+                "previous_response_id": data.get("id"),
+                "input": [
+                    {
+                        "type": "mcp_approval_response",
+                        "approval_request_id": req["id"],
+                        "approve": True,
+                    }
+                ],
+                "stream": False,
+            })
 
     output_items = data.get("output", [])
     logger.info(
