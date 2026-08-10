@@ -43,6 +43,11 @@ def search_jobs(query: str, top_k: int = 10) -> dict:
     Returns:
         Dict with 'results': postings with similarity scores, title, company,
         location, salary, sponsorship_signal, work_mode_signal, and url.
+        work_mode_signal is the only reliable signal for remote/hybrid/
+        onsite — location is not. If work_mode_signal is "not_mentioned",
+        say the listing doesn't specify; never infer remote/hybrid/onsite
+        from location text alone (e.g. a broad location like "US" does not
+        imply remote).
     """
     return {"results": job_broker.search_jobs(query, top_k=top_k)}
 
@@ -59,7 +64,9 @@ def get_recommended_jobs(top_k: int = 10) -> dict:
 
     Returns:
         Dict with 'results', or an empty list plus 'message' if no profile
-        has been saved yet.
+        has been saved yet. As with search_jobs, work_mode_signal is the
+        only reliable remote/hybrid/onsite signal — don't infer it from
+        location text alone.
     """
     results = job_broker.get_recommended_jobs(top_k=top_k)
     if not results:
@@ -124,7 +131,9 @@ def view_pipeline(status: str = None) -> dict:
         Dict with 'applications': tracked postings with their status. Each
         entry includes posting_possibly_stale — a heuristic (the posting is
         old) rather than a live recheck of whether the listing is still up;
-        present it as a hint to verify, not a fact.
+        present it as a hint to verify, not a fact. Same caveat as
+        search_jobs applies to work_mode_signal here too — don't infer
+        remote/hybrid/onsite from location text alone.
     """
     return {"applications": job_broker.get_pipeline(status=status)}
 
