@@ -419,32 +419,32 @@ def chat_diag(q: str, mode: str = "filtered"):
     if not approval_requests:
         return {"steps": steps, "note": "no approval requests came back — nothing to test"}
 
+    request_body = {"model": SUPERVISOR_AGENT_ENDPOINT, "stream": False}
+
     if mode == "filtered":
-        payload_input = [
+        request_body["previous_response_id"] = data.get("id")
+        request_body["input"] = [
             {"type": "mcp_approval_response", "approval_request_id": req["id"], "approve": True}
             for req in approval_requests
         ]
-    else:  # mode == "full"
-        payload_input = []
-        for item in data.get("output", []):
-            if item.get("type") == "mcp_approval_request":
-                payload_input.append({
-                    "type": "mcp_approval_response",
-                    "approval_request_id": item["id"],
-                    "approve": True,
-                })
-            else:
-                payload_input.append(item)
+    elif mode == "full":
+        request_body["previous_response_id"] = data.get("id")
+        request_body["input"] = [
+            {"type": "mcp_approval_response", "approval_request_id": item["id"], "approve": True}
+            if item.get("type") == "mcp_approval_request" else item
+            for item in data.get("output", [])
+        ]
+    else:  # mode == "standalone" — no previous_response_id, fully self-contained input
+        request_body["input"] = [{"role": "user", "content": q}] + [
+            {"type": "mcp_approval_response", "approval_request_id": item["id"], "approve": True}
+            if item.get("type") == "mcp_approval_request" else item
+            for item in data.get("output", [])
+        ]
 
     r2 = _requests.post(
         f"{host}/serving-endpoints/responses",
         headers=headers,
-        json={
-            "model": SUPERVISOR_AGENT_ENDPOINT,
-            "previous_response_id": data.get("id"),
-            "input": payload_input,
-            "stream": False,
-        },
+        json=request_body,
         timeout=120,
     )
     steps.append({"step": f"approval ({mode})", "status": r2.status_code, "body": r2.text[:4000]})
