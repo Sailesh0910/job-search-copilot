@@ -217,8 +217,8 @@ def test_draft_cover_letter_wraps_serving_endpoint_failure(monkeypatch):
 # ----------------------------------------------------------------------------
 
 class _FakeResponsesResponse:
-    """Stands in for the agent endpoint's Responses-API-shaped reply:
-    {"output": [{"content": [{"text": "..."}]}]}."""
+    """Stands in for the agent endpoint's invocations reply:
+    {"output": [{"type": "message", "role": "assistant", "content": [{"text": "..."}]}]}."""
     def __init__(self, text, status_ok=True):
         self._text = text
         self._status_ok = status_ok
@@ -230,7 +230,7 @@ class _FakeResponsesResponse:
             raise requests_module.HTTPError("503 agent endpoint unavailable")
 
     def json(self):
-        return {"output": [{"content": [{"text": self._text}]}]}
+        return {"output": [{"type": "message", "role": "assistant", "content": [{"text": self._text}]}]}
 
 
 class _FakeNonJsonResponse:
@@ -252,17 +252,28 @@ def test_chat_with_agent_returns_reply(monkeypatch):
 
     def fake_post(url, headers, json, timeout):
         captured["url"] = url
-        captured["json"] = json
+        # chat_with_agent mutates the same conversation list in place after
+        # this call returns — snapshot the input list now, or the assertion
+        # below would see later appends too.
+        captured["json"] = {**json, "input": list(json["input"])}
         return _FakeResponsesResponse("Here are three roles that match your profile.")
 
     monkeypatch.setattr(job_broker.requests, "post", fake_post)
 
-    messages = [{"role": "user", "content": "What should I apply to?"}]
-    reply = job_broker.chat_with_agent(messages)
+    conversation = [{"role": "user", "content": "What should I apply to?"}]
+    reply = job_broker.chat_with_agent(conversation)
 
     assert reply == "Here are three roles that match your profile."
-    assert captured["url"].endswith("/serving-endpoints/responses")
-    assert captured["json"]["input"] == messages
+    assert captured["url"].endswith(f"/serving-endpoints/{job_broker.SUPERVISOR_AGENT_ENDPOINT}/invocations")
+    # The endpoint has no previous_response_id continuation — every call
+    # resends the whole conversation, confirmed against Playground's own
+    # network traffic.
+    assert "previous_response_id" not in captured["json"]
+    assert captured["json"]["input"] == [{"role": "user", "content": "What should I apply to?"}]
+    # chat_with_agent mutates the conversation list in place, appending the
+    # agent's reply — the caller (main.py) relies on this to build next
+    # turn's full history.
+    assert conversation[-1]["type"] == "message"
 
 
 def test_chat_with_agent_wraps_failure(monkeypatch):
@@ -276,7 +287,7 @@ def test_chat_with_agent_wraps_failure(monkeypatch):
 
 class _FakeApprovalFlowResponse:
     """A canned .json()-returning response used to script a fixed sequence
-    of raw response bodies for the auto-approval loop."""
+    of raw response bodies for the tool-execution loop."""
     def __init__(self, body):
         self._body = body
         self.status_code = 200
@@ -289,52 +300,75 @@ class _FakeApprovalFlowResponse:
         return self._body
 
 
-def test_chat_with_agent_auto_approves_pending_mcp_tool_calls(monkeypatch):
-    """Regression test for the real stuck-chat bug: a tool call through this
-    app's MCP server can come back as an mcp_approval_request instead of a
-    final answer. /chat has no UI to approve it (unlike the Playground), so
-    this must auto-approve and continue, rather than surface the bare
-    "let me check that" preamble as if it were the whole reply."""
+def test_chat_with_agent_runs_approved_tool_and_resends_full_history(monkeypatch):
+    """Regression test for the real stuck-chat bug, and for the real fix:
+    inspecting Agent Bricks Playground's own network traffic showed this
+    endpoint (a) has no previous_response_id continuation — the full
+    conversation is resent every call — and (b) never executes MCP tools
+    itself after approval; the caller has to run the tool and report back a
+    function_call_output. Earlier attempts assuming the OpenAI Responses API
+    spec (server-side execution, previous_response_id chaining) all failed
+    against the real endpoint with "Invalid message sequence" errors."""
+    import mcp_tools
+
     monkeypatch.setattr("databricks.sdk.WorkspaceClient", _FakeWorkspaceClient)
+    monkeypatch.setitem(mcp_tools.TOOL_DISPATCH, "check_stale_applications",
+                         lambda days=14: {"stale": []})
 
     first_response = {
         "id": "resp_1",
         "output": [
-            {"type": "message", "content": [{"text": "I'll check that for you."}]},
-            {"type": "mcp_approval_request", "id": "mcpr_1"},
+            {"type": "message", "role": "assistant", "content": [{"text": "I'll check that for you."}]},
+            {"type": "mcp_approval_request", "id": "mcpr_1", "name": "check_stale_applications",
+             "arguments": '{"days": 14}'},
         ],
     }
     final_response = {
         "id": "resp_2",
-        "output": [{"type": "message", "content": [{"text": "Here is your cover letter draft."}]}],
+        "output": [{"type": "message", "role": "assistant", "content": [{"text": "Nothing needs follow-up."}]}],
     }
     calls = []
 
     def fake_post(url, headers, json, timeout):
-        calls.append(json)
+        calls.append({**json, "input": list(json["input"])})
         body = first_response if len(calls) == 1 else final_response
         return _FakeApprovalFlowResponse(body)
 
     monkeypatch.setattr(job_broker.requests, "post", fake_post)
 
-    reply = job_broker.chat_with_agent([{"role": "user", "content": "Draft a cover letter"}])
+    conversation = [{"role": "user", "content": "Do I have pending work?"}]
+    reply = job_broker.chat_with_agent(conversation)
 
-    assert reply == "Here is your cover letter draft."
+    assert reply == "Nothing needs follow-up."
     assert len(calls) == 2
-    assert calls[1]["previous_response_id"] == "resp_1"
+    # No previous_response_id — the second call resends everything: the
+    # original user turn, the first response's own output items, plus the
+    # approval response and the tool's real output this function ran itself.
+    assert "previous_response_id" not in calls[1]
     assert calls[1]["input"] == [
-        {"type": "mcp_approval_response", "approval_request_id": "mcpr_1", "approve": True}
+        {"role": "user", "content": "Do I have pending work?"},
+        {"type": "message", "role": "assistant", "content": [{"text": "I'll check that for you."}]},
+        {"type": "mcp_approval_request", "id": "mcpr_1", "name": "check_stale_applications",
+         "arguments": '{"days": 14}'},
+        {"type": "mcp_approval_response", "approval_request_id": "mcpr_1", "approve": True},
+        {"type": "function_call_output", "call_id": "mcpr_1", "name": "check_stale_applications",
+         "output": '{"stale": []}'},
     ]
 
 
-def test_chat_with_agent_approval_loop_is_capped(monkeypatch):
-    """If the endpoint somehow keeps returning approval requests forever,
-    this must not hang the request indefinitely."""
+def test_chat_with_agent_tool_loop_is_capped(monkeypatch):
+    """If the endpoint somehow keeps requesting tool calls forever, this
+    must not hang the request indefinitely."""
+    import mcp_tools
+
     monkeypatch.setattr("databricks.sdk.WorkspaceClient", _FakeWorkspaceClient)
+    monkeypatch.setitem(mcp_tools.TOOL_DISPATCH, "check_stale_applications",
+                         lambda days=14: {"stale": []})
 
     always_pending = {
         "id": "resp_loop",
-        "output": [{"type": "mcp_approval_request", "id": "mcpr_loop"}],
+        "output": [{"type": "mcp_approval_request", "id": "mcpr_loop", "name": "check_stale_applications",
+                     "arguments": "{}"}],
     }
     calls = []
 
@@ -344,10 +378,10 @@ def test_chat_with_agent_approval_loop_is_capped(monkeypatch):
 
     monkeypatch.setattr(job_broker.requests, "post", fake_post)
 
-    with pytest.raises(RuntimeError, match="no text output"):
+    with pytest.raises(RuntimeError, match="capped at 10 rounds"):
         job_broker.chat_with_agent([{"role": "user", "content": "hi"}])
 
-    assert len(calls) == 6  # 1 initial + 5 capped approval rounds
+    assert len(calls) == 10
 
 
 def test_chat_with_agent_extracts_message_from_sse_error_frame(monkeypatch):

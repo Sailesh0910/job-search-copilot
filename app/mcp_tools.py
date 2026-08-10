@@ -231,3 +231,22 @@ def log_interview_note(application_id: int, note_text: str, interview_date: str 
         return job_broker.add_interview_note(application_id, note_text, interview_date)
     except Exception as e:
         return {"error": str(e)}
+
+
+# Maps a tool name (as the agent refers to it in an mcp_approval_request) to
+# the plain function above. The Supervisor Agent's own serving endpoint does
+# not call back into this app's /mcp after an approval — the caller is
+# expected to run the tool itself and report the result back as a
+# function_call_output. job_broker.chat_with_agent uses this to do that
+# in-process, without an extra network hop through /mcp.
+TOOL_DISPATCH = {
+    "search_jobs": search_jobs,
+    "get_recommended_jobs": get_recommended_jobs,
+    "find_new_postings": find_new_postings,
+    "save_job": save_job,
+    "view_pipeline": view_pipeline,
+    "remove_saved_job": remove_saved_job,
+    "check_stale_applications": check_stale_applications,
+    "draft_cover_letter": draft_cover_letter,
+    "log_interview_note": log_interview_note,
+}

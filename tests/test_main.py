@@ -293,8 +293,19 @@ def test_chat_page_loads_empty(client):
     assert "Say something to get started" in resp.text
 
 
+def _fake_chat_with_agent(reply_text):
+    """chat_with_agent mutates the passed conversation list in place,
+    appending the raw item(s) the agent returned — main.py no longer
+    appends the reply itself, since the real function's contract is that
+    everything needed for the next turn already ends up in the list."""
+    def fake(conversation):
+        conversation.append({"type": "message", "role": "assistant", "content": [{"text": reply_text}]})
+        return reply_text
+    return fake
+
+
 def test_chat_send_appends_history_and_shows_reply(client, monkeypatch):
-    monkeypatch.setattr(job_broker, "chat_with_agent", lambda messages: "Here are your top matches.")
+    monkeypatch.setattr(job_broker, "chat_with_agent", _fake_chat_with_agent("Here are your top matches."))
 
     resp = client.post("/chat", data={"message": "What should I apply to?"}, follow_redirects=False)
     assert resp.status_code == 303
@@ -329,7 +340,7 @@ def test_chat_send_failure_redirects_with_error_and_keeps_user_message(client, m
 
 
 def test_chat_clear_empties_history(client, monkeypatch):
-    monkeypatch.setattr(job_broker, "chat_with_agent", lambda messages: "reply")
+    monkeypatch.setattr(job_broker, "chat_with_agent", _fake_chat_with_agent("reply"))
     client.post("/chat", data={"message": "hello"})
     assert main._chat_history != []
 

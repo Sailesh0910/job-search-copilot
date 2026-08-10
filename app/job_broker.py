@@ -243,14 +243,21 @@ def _extract_sse_error(raw_text: str):
     return None
 
 
-def _post_responses(host: str, headers: dict, payload: dict) -> dict:
-    """POSTs one request to the agent's Responses API endpoint and returns
-    the parsed JSON body, or raises a RuntimeError with the real cause."""
+def _post_invocations(host: str, headers: dict, conversation: list) -> dict:
+    """POSTs the full conversation to the agent's serving endpoint and
+    returns the parsed JSON body, or raises a RuntimeError with the real
+    cause.
+
+    Uses {host}/serving-endpoints/{endpoint}/invocations, not the OpenAI
+    Responses API's generic /serving-endpoints/responses route. Confirmed by
+    inspecting the Agent Bricks Playground's own network traffic: this
+    endpoint has no previous_response_id continuation, every call must
+    resend the complete conversation from scratch."""
     try:
         response = requests.post(
-            f"{host}/serving-endpoints/responses",
+            f"{host}/serving-endpoints/{SUPERVISOR_AGENT_ENDPOINT}/invocations",
             headers=headers,
-            json=payload,
+            json={"input": conversation, "stream": False},
             timeout=120,
         )
         response.raise_for_status()
@@ -282,15 +289,26 @@ def _post_responses(host: str, headers: dict, payload: dict) -> dict:
         ) from e
 
 
-def chat_with_agent(messages: list) -> str:
+def chat_with_agent(conversation: list) -> str:
     """
-    Sends the full conversation so far (a list of {"role", "content"} dicts)
-    to the Supervisor Agent and returns its reply text.
+    Sends the full conversation so far to the Supervisor Agent and returns
+    its reply text. `conversation` is a list of raw item dicts (user/
+    assistant messages, and — once a tool has been called — the
+    mcp_approval_request/response and function_call_output items below);
+    this function mutates it in place, appending every new item so the
+    caller's stored history is exactly what needs to be resent next turn.
 
-    Uses the OpenAI Responses API shape the agent endpoint expects
-    (POST {host}/serving-endpoints/responses with a "model" and "input"
-    field), not the chat-completions shape draft_cover_letter uses above.
+    This endpoint (unlike the generic OpenAI Responses API) is stateless
+    with no previous_response_id continuation, and does not execute MCP
+    tools itself after an approval — the caller has to actually run the
+    tool and report the result back as a function_call_output. Both facts
+    were confirmed by inspecting Agent Bricks Playground's own network
+    traffic (it doesn't work any other way, multiple other request shapes
+    were tried and rejected with an "Invalid message sequence" error), not
+    assumed from the OpenAI spec.
     """
+    from mcp_tools import TOOL_DISPATCH
+
     try:
         from databricks.sdk import WorkspaceClient
 
@@ -304,56 +322,43 @@ def chat_with_agent(messages: list) -> str:
             f"reachable."
         ) from e
 
-    data = _post_responses(host, headers, {
-        "model": SUPERVISOR_AGENT_ENDPOINT,
-        "input": messages,
-        "stream": False,
-    })
+    for _ in range(10):
+        data = _post_invocations(host, headers, conversation)
+        output_items = data.get("output", [])
+        conversation.extend(output_items)
 
-    # A tool call through this app's MCP server can come back pending
-    # approval (an "mcp_approval_request" output item) instead of a final
-    # answer — the OpenAI Responses API's standard mechanism for gating MCP
-    # tool calls, which Agent Bricks' Playground has a UI for approving.
-    # /chat has no such UI, so without this the conversation just stalls on
-    # "let me check that" forever. Auto-approve instead: this app is
-    # single-user, and the one genuinely irreversible tool
-    # (remove_saved_job) already enforces its own two-step confirmation
-    # independently of this, so this platform-level gate isn't adding real
-    # safety here, it's only in the way. Capped at 5 rounds so a bug can't
-    # loop forever.
-    for _ in range(5):
-        approval_requests = [
-            item for item in data.get("output", [])
-            if item.get("type") == "mcp_approval_request"
-        ]
+        approval_requests = [item for item in output_items if item.get("type") == "mcp_approval_request"]
         if not approval_requests:
             break
-        logger.info("chat_with_agent auto-approving %d MCP tool call(s)", len(approval_requests))
-        data = _post_responses(host, headers, {
-            "model": SUPERVISOR_AGENT_ENDPOINT,
-            "previous_response_id": data.get("id"),
-            "input": [
-                {
-                    "type": "mcp_approval_response",
-                    "approval_request_id": req["id"],
-                    "approve": True,
-                }
-                for req in approval_requests
-            ],
-            "stream": False,
-        })
 
-    output_items = data.get("output", [])
-    logger.info(
-        "chat_with_agent output items: %s",
-        [(item.get("type"), len(item.get("content", []) or [])) for item in output_items],
-    )
+        for req in approval_requests:
+            conversation.append({
+                "type": "mcp_approval_response",
+                "approval_request_id": req["id"],
+                "approve": True,
+            })
+            tool_name = req.get("name")
+            tool_fn = TOOL_DISPATCH.get(tool_name)
+            try:
+                arguments = json.loads(req.get("arguments") or "{}")
+                result = tool_fn(**arguments) if tool_fn else {"error": f"Unknown tool '{tool_name}'"}
+            except Exception as e:
+                result = {"error": str(e)}
+            logger.info("chat_with_agent ran tool %s -> %s", tool_name, list(result.keys()) if isinstance(result, dict) else type(result))
+            conversation.append({
+                "type": "function_call_output",
+                "call_id": req["id"],
+                "name": tool_name,
+                "output": json.dumps(result),
+            })
+    else:
+        raise RuntimeError("The agent kept requesting tool calls without producing a final answer (capped at 10 rounds).")
 
-    reply = " ".join(
-        content.get("text", "")
-        for output in output_items
-        for content in output.get("content", [])
-    ).strip()
+    reply = ""
+    for item in reversed(conversation):
+        if item.get("type") == "message" and item.get("role") == "assistant":
+            reply = " ".join(c.get("text", "") for c in item.get("content", [])).strip()
+            break
 
     if not reply:
         raise RuntimeError(
