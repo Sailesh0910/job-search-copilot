@@ -7,6 +7,7 @@ directly — they call into here, and this is the one place that logic lives.
 import json
 import logging
 import os
+import uuid
 
 import requests
 
@@ -243,7 +244,7 @@ def _extract_sse_error(raw_text: str):
     return None
 
 
-def _post_invocations(host: str, headers: dict, conversation: list) -> dict:
+def _post_invocations(host: str, headers: dict, conversation: list, conversation_id: str) -> dict:
     """POSTs the full conversation to the agent's serving endpoint and
     returns the parsed JSON body, or raises a RuntimeError with the real
     cause.
@@ -252,12 +253,25 @@ def _post_invocations(host: str, headers: dict, conversation: list) -> dict:
     Responses API's generic /serving-endpoints/responses route. Confirmed by
     inspecting the Agent Bricks Playground's own network traffic: this
     endpoint has no previous_response_id continuation, every call must
-    resend the complete conversation from scratch."""
+    resend the complete conversation from scratch.
+
+    conversation_id is sent in both "context" and "databricks_options",
+    matching what Playground's own requests always included and this
+    client originally omitted. Approval requests were being rejected with
+    "the approval response ID does not match the request" even when
+    submitted one at a time — the working theory is that pending approvals
+    are tracked server-side keyed by conversation id, so without it the
+    server has nothing to match the approval response against."""
     try:
         response = requests.post(
             f"{host}/serving-endpoints/{SUPERVISOR_AGENT_ENDPOINT}/invocations",
             headers=headers,
-            json={"input": conversation, "stream": False},
+            json={
+                "input": conversation,
+                "stream": False,
+                "context": {"conversation_id": conversation_id},
+                "databricks_options": {"conversation_id": conversation_id},
+            },
             timeout=120,
         )
         response.raise_for_status()
@@ -289,7 +303,7 @@ def _post_invocations(host: str, headers: dict, conversation: list) -> dict:
         ) from e
 
 
-def chat_with_agent(conversation: list) -> str:
+def chat_with_agent(conversation: list, conversation_id: str = None) -> str:
     """
     Sends the full conversation so far to the Supervisor Agent and returns
     its reply text. `conversation` is a list of raw item dicts (user/
@@ -297,6 +311,12 @@ def chat_with_agent(conversation: list) -> str:
     mcp_approval_request/response and function_call_output items below);
     this function mutates it in place, appending every new item so the
     caller's stored history is exactly what needs to be resent next turn.
+
+    conversation_id should be stable across every turn of the same chat
+    (the caller should generate one once and keep passing it in) — pending
+    tool approvals appear to be tracked server-side keyed by it. Left
+    optional and generated fresh here as a fallback so a caller that
+    doesn't track one yet still works, just without that continuity.
 
     This endpoint (unlike the generic OpenAI Responses API) is stateless
     with no previous_response_id continuation, and does not execute MCP
@@ -308,6 +328,9 @@ def chat_with_agent(conversation: list) -> str:
     assumed from the OpenAI spec.
     """
     from mcp_tools import TOOL_DISPATCH
+
+    if conversation_id is None:
+        conversation_id = str(uuid.uuid4())
 
     try:
         from databricks.sdk import WorkspaceClient
@@ -322,7 +345,7 @@ def chat_with_agent(conversation: list) -> str:
             f"reachable."
         ) from e
 
-    data = _post_invocations(host, headers, conversation)
+    data = _post_invocations(host, headers, conversation, conversation_id)
     conversation.extend(data.get("output", []))
 
     for _ in range(10):
@@ -376,7 +399,7 @@ def chat_with_agent(conversation: list) -> str:
             "output": json.dumps(result, default=str),
         })
 
-        data = _post_invocations(host, headers, conversation)
+        data = _post_invocations(host, headers, conversation, conversation_id)
         conversation.extend(data.get("output", []))
     else:
         raise RuntimeError("The agent kept requesting tool calls without producing a final answer (capped at 10 rounds).")

@@ -14,6 +14,7 @@ an agent calling tools.
 
 import logging
 import os
+import uuid
 from contextlib import asynccontextmanager
 from typing import Literal, Optional
 from urllib.parse import quote
@@ -106,6 +107,12 @@ JOBS_PAGE_SIZE = 25
 # scope as the rest of the app, see ARCHITECTURE.md); resets on redeploy or
 # if the app sleeps, which is an acceptable tradeoff for a demo chat surface.
 _chat_history: list = []
+
+# Stable for the lifetime of one conversation, regenerated on /chat/clear.
+# The agent's approval-gated tool calls appear to be tracked server-side
+# keyed by this — reusing one id across every turn (rather than a fresh one
+# per request) is required for multi-turn tool approval to work at all.
+_chat_conversation_id: str = str(uuid.uuid4())
 
 
 def _parse_optional_int(raw: Optional[str]) -> Optional[int]:
@@ -382,7 +389,7 @@ def chat_send(message: str = Form(...)):
 
     _chat_history.append({"role": "user", "content": message})
     try:
-        job_broker.chat_with_agent(_chat_history)
+        job_broker.chat_with_agent(_chat_history, _chat_conversation_id)
     except RuntimeError as e:
         logger.error("Chat with agent failed: %s", e)
         return RedirectResponse("/chat?error=1", status_code=303)
@@ -392,7 +399,9 @@ def chat_send(message: str = Form(...)):
 
 @app.post("/chat/clear")
 def chat_clear():
+    global _chat_conversation_id
     _chat_history.clear()
+    _chat_conversation_id = str(uuid.uuid4())
     return RedirectResponse("/chat", status_code=303)
 
 

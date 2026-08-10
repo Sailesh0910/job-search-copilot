@@ -298,7 +298,7 @@ def _fake_chat_with_agent(reply_text):
     appending the raw item(s) the agent returned — main.py no longer
     appends the reply itself, since the real function's contract is that
     everything needed for the next turn already ends up in the list."""
-    def fake(conversation):
+    def fake(conversation, conversation_id):
         conversation.append({"type": "message", "role": "assistant", "content": [{"text": reply_text}]})
         return reply_text
     return fake
@@ -317,14 +317,14 @@ def test_chat_send_appends_history_and_shows_reply(client, monkeypatch):
 
 
 def test_chat_send_blank_message_is_a_no_op(client, monkeypatch):
-    monkeypatch.setattr(job_broker, "chat_with_agent", lambda messages: "should not be called")
+    monkeypatch.setattr(job_broker, "chat_with_agent", lambda conversation, conversation_id: "should not be called")
     resp = client.post("/chat", data={"message": "   "}, follow_redirects=False)
     assert resp.status_code == 303
     assert main._chat_history == []
 
 
 def test_chat_send_failure_redirects_with_error_and_keeps_user_message(client, monkeypatch):
-    def boom(messages):
+    def boom(conversation, conversation_id):
         raise RuntimeError("agent endpoint unavailable")
 
     monkeypatch.setattr(job_broker, "chat_with_agent", boom)

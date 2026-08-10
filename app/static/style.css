@@ -280,6 +280,7 @@ button[disabled], .btn[disabled] { opacity: 0.6; cursor: not-allowed; }
     padding: 10px 14px;
     border-radius: var(--radius);
     white-space: pre-wrap;
+    overflow-wrap: anywhere;
     font-size: 0.92rem;
     line-height: 1.5;
 }
