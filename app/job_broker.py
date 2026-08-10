@@ -322,40 +322,62 @@ def chat_with_agent(conversation: list) -> str:
             f"reachable."
         ) from e
 
-    for _ in range(10):
-        data = _post_invocations(host, headers, conversation)
-        output_items = data.get("output", [])
-        conversation.extend(output_items)
+    data = _post_invocations(host, headers, conversation)
+    conversation.extend(data.get("output", []))
 
-        approval_requests = [item for item in output_items if item.get("type") == "mcp_approval_request"]
-        if not approval_requests:
+    for _ in range(10):
+        # Only ever resolve one pending approval per round-trip, even if the
+        # model queued up several tool calls in parallel in a single
+        # response. Submitting more than one mcp_approval_response/
+        # function_call_output pair together in one call was rejected by
+        # the agent backend ("Invalid approval response. The approval
+        # response ID does not match the request.") — confirmed live, not
+        # assumed.
+        #
+        # Scanned from the whole conversation, not just the latest
+        # response's output: once a request has already been surfaced, a
+        # later reply has no reason to repeat it, so relying on "the newest
+        # response still lists it" would silently drop any approval beyond
+        # the first one handled.
+        answered_ids = {
+            item["approval_request_id"] for item in conversation
+            if item.get("type") == "mcp_approval_response"
+        }
+        pending = [
+            item for item in conversation
+            if item.get("type") == "mcp_approval_request" and item["id"] not in answered_ids
+        ]
+        if not pending:
             break
 
-        for req in approval_requests:
-            conversation.append({
-                "type": "mcp_approval_response",
-                "approval_request_id": req["id"],
-                "approve": True,
-            })
-            tool_name = req.get("name")
-            tool_fn = TOOL_DISPATCH.get(tool_name)
-            try:
-                arguments = json.loads(req.get("arguments") or "{}")
-                result = tool_fn(**arguments) if tool_fn else {"error": f"Unknown tool '{tool_name}'"}
-            except Exception as e:
-                result = {"error": str(e)}
-            logger.info("chat_with_agent ran tool %s -> %s", tool_name, list(result.keys()) if isinstance(result, dict) else type(result))
-            conversation.append({
-                "type": "function_call_output",
-                "call_id": req["id"],
-                "name": tool_name,
-                # default=str: tool results can carry raw datetime values
-                # (e.g. view_pipeline's status_updated_at) straight from the
-                # database. FastMCP handles that conversion for us when a
-                # tool is called over /mcp; calling the function directly
-                # here bypasses that, so it's needed explicitly.
-                "output": json.dumps(result, default=str),
-            })
+        req = pending[0]
+        conversation.append({
+            "type": "mcp_approval_response",
+            "approval_request_id": req["id"],
+            "approve": True,
+        })
+        tool_name = req.get("name")
+        tool_fn = TOOL_DISPATCH.get(tool_name)
+        try:
+            arguments = json.loads(req.get("arguments") or "{}")
+            result = tool_fn(**arguments) if tool_fn else {"error": f"Unknown tool '{tool_name}'"}
+        except Exception as e:
+            result = {"error": str(e)}
+        logger.info("chat_with_agent ran tool %s -> %s", tool_name, list(result.keys()) if isinstance(result, dict) else type(result))
+        conversation.append({
+            "type": "function_call_output",
+            "call_id": req["id"],
+            "name": tool_name,
+            # default=str: tool results can carry raw datetime values (e.g.
+            # view_pipeline's status_updated_at) straight from the
+            # database. FastMCP handles that conversion for us when a tool
+            # is called over /mcp; calling the function directly here
+            # bypasses that, so it's needed explicitly.
+            "output": json.dumps(result, default=str),
+        })
+
+        data = _post_invocations(host, headers, conversation)
+        conversation.extend(data.get("output", []))
     else:
         raise RuntimeError("The agent kept requesting tool calls without producing a final answer (capped at 10 rounds).")
 

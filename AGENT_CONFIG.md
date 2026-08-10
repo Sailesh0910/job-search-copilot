@@ -48,4 +48,6 @@ Guardrails:
 
 ## Demonstrated Behavior
 
-[Add your 3+ demo transcripts here once tested, one per major tool category: a search, a pipeline update, and a cover letter draft, following the same format as the Day 3 submission: the question, the tool call, its output, and the agent's final answer.]
+Look into Demo-Transcripts for screenshots of the transcript
+
+

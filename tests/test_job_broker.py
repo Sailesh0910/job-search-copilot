@@ -356,6 +356,63 @@ def test_chat_with_agent_runs_approved_tool_and_resends_full_history(monkeypatch
     ]
 
 
+def test_chat_with_agent_resolves_parallel_approvals_one_at_a_time(monkeypatch):
+    """Regression test for a real failure: when the model requests two tool
+    calls in one turn (both mcp_approval_request items in the same
+    response), submitting both approval+output pairs together in one
+    follow-up call was rejected by the agent backend ("Invalid approval
+    response. The approval response ID does not match the request."), even
+    though each tool had actually already run successfully. Each pending
+    approval must go out in its own round-trip."""
+    import mcp_tools
+
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient", _FakeWorkspaceClient)
+    monkeypatch.setitem(mcp_tools.TOOL_DISPATCH, "check_stale_applications", lambda days=14: {"stale": []})
+    monkeypatch.setitem(mcp_tools.TOOL_DISPATCH, "view_pipeline", lambda status=None: {"applications": []})
+
+    first_response = {
+        "output": [
+            {"type": "message", "role": "assistant", "content": [{"text": "I'll check both."}]},
+            {"type": "mcp_approval_request", "id": "mcpr_1", "name": "check_stale_applications", "arguments": "{}"},
+            {"type": "mcp_approval_request", "id": "mcpr_2", "name": "view_pipeline", "arguments": "{}"},
+        ],
+    }
+    # After resolving mcpr_1, the server has no reason to repeat mcpr_2 in
+    # its next reply — it already told us about it once, in the first
+    # response. This empty body simulates that; chat_with_agent still has
+    # to find mcpr_2 by scanning the accumulated conversation, not by
+    # looking at only the latest response.
+    empty_response = {"output": []}
+    final_response = {
+        "output": [{"type": "message", "role": "assistant", "content": [{"text": "All clear."}]}],
+    }
+    calls = []
+
+    def fake_post(url, headers, json, timeout):
+        calls.append({**json, "input": list(json["input"])})
+        body = [first_response, empty_response, final_response][len(calls) - 1]
+        return _FakeApprovalFlowResponse(body)
+
+    monkeypatch.setattr(job_broker.requests, "post", fake_post)
+
+    reply = job_broker.chat_with_agent([{"role": "user", "content": "Do I have pending work?"}])
+
+    assert reply == "All clear."
+    # 1 initial call + 1 per pending approval, each resolved in its own
+    # round-trip rather than batched together.
+    assert len(calls) == 3
+    types_in_call_2 = [item.get("type") for item in calls[1]["input"]]
+    assert types_in_call_2[-2:] == ["mcp_approval_response", "function_call_output"]
+    # mcpr_2 must still be unresolved after call 2 — only mcpr_1 was handled.
+    assert not any(
+        item.get("type") == "mcp_approval_response" and item.get("approval_request_id") == "mcpr_2"
+        for item in calls[1]["input"]
+    )
+    types_in_call_3 = [item.get("type") for item in calls[2]["input"]]
+    assert types_in_call_3[-2:] == ["mcp_approval_response", "function_call_output"]
+    assert calls[2]["input"][-2]["approval_request_id"] == "mcpr_2"
+
+
 def test_chat_with_agent_tool_loop_is_capped(monkeypatch):
     """If the endpoint somehow keeps requesting tool calls forever, this
     must not hang the request indefinitely."""
@@ -365,23 +422,28 @@ def test_chat_with_agent_tool_loop_is_capped(monkeypatch):
     monkeypatch.setitem(mcp_tools.TOOL_DISPATCH, "check_stale_applications",
                          lambda days=14: {"stale": []})
 
-    always_pending = {
-        "id": "resp_loop",
-        "output": [{"type": "mcp_approval_request", "id": "mcpr_loop", "name": "check_stale_applications",
-                     "arguments": "{}"}],
-    }
     calls = []
 
     def fake_post(url, headers, json, timeout):
         calls.append(json)
-        return _FakeApprovalFlowResponse(always_pending)
+        # A fresh id every round — a real server would too, since it's a
+        # new tool call each time, not a repeat of the last one. Reusing
+        # one id would make chat_with_agent's "already answered" check
+        # correctly treat it as resolved after round 1, which isn't the
+        # scenario this test is for.
+        body = {
+            "id": f"resp_loop_{len(calls)}",
+            "output": [{"type": "mcp_approval_request", "id": f"mcpr_loop_{len(calls)}",
+                        "name": "check_stale_applications", "arguments": "{}"}],
+        }
+        return _FakeApprovalFlowResponse(body)
 
     monkeypatch.setattr(job_broker.requests, "post", fake_post)
 
     with pytest.raises(RuntimeError, match="capped at 10 rounds"):
         job_broker.chat_with_agent([{"role": "user", "content": "hi"}])
 
-    assert len(calls) == 10
+    assert len(calls) == 11  # 1 initial + 10 capped approval rounds
 
 
 def test_chat_with_agent_extracts_message_from_sse_error_frame(monkeypatch):
