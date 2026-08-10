@@ -44,10 +44,34 @@ Guardrails:
 - posting_possibly_stale on a pipeline entry is a heuristic (the listing is old), not a live recheck of whether it's still open. Present it as a hint to verify, not a fact.
 - Cover letter drafts are a starting point for the user to edit, not a final document. Say so when presenting one.
 - If the user's location or role is ambiguous, ask them to clarify rather than guessing.
+- Only describe a posting as remote, hybrid, or onsite if work_mode_signal says so directly. If it's "not_mentioned", say the listing doesn't specify. Never infer work mode from the location field alone, a broad location like "US" does not imply remote.
 ```
 
 ## Demonstrated Behavior
 
 Look into Demo-Transcripts for screenshots of the transcript
+
+## Known Limitation: multi-tool questions in /chat
+
+`/chat` (this app's own chat page) works reliably for questions that need a
+single tool call, e.g. "search for data engineer jobs." Questions that need
+two or more tool calls in the same turn, e.g. "do I have any pending work"
+(which calls both `view_pipeline` and `check_stale_applications`), fail with
+an "Invalid approval response. The approval response ID does not match the
+request." error from the agent's serving endpoint, even though both tools
+run successfully and return correct data — the failure is specifically in
+submitting the second tool's approval back to the endpoint.
+
+This was investigated thoroughly: batching both approvals into one request,
+submitting them one at a time in separate requests, matching the exact
+request shape used by Agent Bricks' own Playground (which does work for the
+same multi-tool questions), and adding a stable conversation_id across
+turns were all tried, each grounded in evidence rather than guesswork, and
+none resolved it. The likely explanation is that Playground relies on some
+part of the authenticated browser session (cookies, session state scoped to
+that login) that a server-to-server API call has no way to replicate.
+
+For multi-tool questions, use the Agent Bricks Playground directly instead
+of this app's /chat page.
 
 
