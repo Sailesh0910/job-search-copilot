@@ -349,7 +349,12 @@ def chat_with_agent(conversation: list) -> str:
                 "type": "function_call_output",
                 "call_id": req["id"],
                 "name": tool_name,
-                "output": json.dumps(result),
+                # default=str: tool results can carry raw datetime values
+                # (e.g. view_pipeline's status_updated_at) straight from the
+                # database. FastMCP handles that conversion for us when a
+                # tool is called over /mcp; calling the function directly
+                # here bypasses that, so it's needed explicitly.
+                "output": json.dumps(result, default=str),
             })
     else:
         raise RuntimeError("The agent kept requesting tool calls without producing a final answer (capped at 10 rounds).")
