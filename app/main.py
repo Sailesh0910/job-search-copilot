@@ -26,6 +26,7 @@ from starlette.routing import Route
 
 import embeddings
 import job_broker
+from config import SUPERVISOR_AGENT_ENDPOINT
 from mcp_tools import mcp
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -376,6 +377,78 @@ def chat_send(message: str = Form(...)):
 def chat_clear():
     _chat_history.clear()
     return RedirectResponse("/chat", status_code=303)
+
+
+@app.get("/debug/chat-diag")
+def chat_diag(q: str, mode: str = "filtered"):
+    """
+    TEMPORARY — diagnosing the "Invalid message sequence" error from the
+    agent's mcp_approval_request flow. Not linked from any page. Hits the
+    raw Responses API directly and returns every intermediate body, instead
+    of collapsing to text/RuntimeError like chat_with_agent does, so we can
+    see exactly what the agent sends back at each step without digging
+    through app logs.
+
+    mode=filtered (default): submit only the mcp_approval_response items,
+        same shape job_broker.chat_with_agent currently sends.
+    mode=full: echo back the entire original output array, with each
+        mcp_approval_request item replaced in place by its matching
+        mcp_approval_response, preserving every other item's position.
+
+    DELETE THIS ROUTE once the real fix is found.
+    """
+    import requests as _requests
+    from databricks.sdk import WorkspaceClient
+
+    w = WorkspaceClient()
+    host = w.config.host
+    headers = w.config.authenticate()
+
+    steps = []
+
+    r1 = _requests.post(
+        f"{host}/serving-endpoints/responses",
+        headers=headers,
+        json={"model": SUPERVISOR_AGENT_ENDPOINT, "input": [{"role": "user", "content": q}], "stream": False},
+        timeout=120,
+    )
+    steps.append({"step": "initial", "status": r1.status_code, "body": r1.text[:4000]})
+    data = r1.json()
+
+    approval_requests = [item for item in data.get("output", []) if item.get("type") == "mcp_approval_request"]
+    if not approval_requests:
+        return {"steps": steps, "note": "no approval requests came back — nothing to test"}
+
+    if mode == "filtered":
+        payload_input = [
+            {"type": "mcp_approval_response", "approval_request_id": req["id"], "approve": True}
+            for req in approval_requests
+        ]
+    else:  # mode == "full"
+        payload_input = []
+        for item in data.get("output", []):
+            if item.get("type") == "mcp_approval_request":
+                payload_input.append({
+                    "type": "mcp_approval_response",
+                    "approval_request_id": item["id"],
+                    "approve": True,
+                })
+            else:
+                payload_input.append(item)
+
+    r2 = _requests.post(
+        f"{host}/serving-endpoints/responses",
+        headers=headers,
+        json={
+            "model": SUPERVISOR_AGENT_ENDPOINT,
+            "previous_response_id": data.get("id"),
+            "input": payload_input,
+            "stream": False,
+        },
+        timeout=120,
+    )
+    steps.append({"step": f"approval ({mode})", "status": r2.status_code, "body": r2.text[:4000]})
+    return {"steps": steps}
 
 
 if __name__ == "__main__":
